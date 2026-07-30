@@ -1,0 +1,1281 @@
+#!/usr/bin/env -S rbenv exec ruby
+# frozen_string_literal: true
+
+require "cgi"
+require "fileutils"
+require "find"
+require "json"
+require "net/http"
+require "pathname"
+require "prism"
+require "rbconfig"
+require "ripper"
+require "shellwords"
+require "tempfile"
+require "tmpdir"
+require "uri"
+
+class AtCoderWorkspace
+  RUBY_LANGUAGE_ID = "6087"
+  ATCODER_HOST = "atcoder.jp"
+  USER_AGENT = "AtCoderRubyWorkspace/1.0"
+  SAMPLE_FILE_PATTERN = /\Asample-\d+\.(?:in|out)\z/
+  SAMPLE_MARKER = ".samples-complete"
+  CASE_NAME_PATTERN = /\A[a-z0-9][a-z0-9_-]*\z/
+  RANDOM_DEFAULT_COUNT = 100
+  RANDOM_DEFAULT_SEED = 1
+  RANDOM_DEFAULT_TIMEOUT = 10.0
+  RANDOM_OUTPUT_LIMIT = 16 * 1024 * 1024
+  RANDOM_STDERR_PREVIEW = 8 * 1024
+  RANDOM_FILES = %w[generator.rb oracle.rb].freeze
+  BUNDLE_FILENAME = "submission.rb"
+  BUNDLE_MARKER = "# generated_by: bin/atcoder bundle"
+  FROZEN_STRING_LITERAL = "# frozen_string_literal: true"
+  RUBY_EOF_CONTROL_BYTES = [0x00, 0x04, 0x1A].freeze
+  RIPPER_PREAMBLE_TOKENS = %i[
+    on_comment
+    on_embdoc
+    on_embdoc_beg
+    on_embdoc_end
+    on_ignored_nl
+    on_nl
+    on_sp
+  ].freeze
+
+  ProcessResult = Struct.new(
+    :stdout,
+    :stderr,
+    :status,
+    :timed_out,
+    :output_limited,
+    :background_processes,
+    keyword_init: true
+  ) do
+    def success?
+      !timed_out && !output_limited && !background_processes && status&.success?
+    end
+  end
+
+  def initialize
+    @project_root = Pathname(__dir__).parent.expand_path
+    @workspace_root = Pathname(ENV.fetch("ATCODER_WORKSPACE_ROOT", @project_root.to_s)).expand_path
+    @oj = @project_root.join(".venv/bin/oj")
+    @ruby = RbConfig.ruby
+    @library_dir = @project_root.join("library")
+  end
+
+  def run(argv)
+    command = argv.shift
+
+    case command
+    when "contest"
+      create_contest(argv)
+    when "tasks"
+      list_tasks(argv)
+    when "new"
+      create_problem(argv)
+    when "add-case"
+      target = required_argument(argv, "TARGET")
+      name = required_argument(argv, "NAME")
+      input = required_argument(argv, "INPUT")
+      expected = required_argument(argv, "EXPECTED")
+      ensure_no_arguments!(argv)
+      add_case(target, name, input, expected)
+    when "test"
+      target = required_argument(argv, "TARGET")
+      ensure_no_arguments!(argv)
+      exit(test_problem(target) ? 0 : 1)
+    when "run"
+      target = required_argument(argv, "TARGET")
+      input = argv.shift
+      ensure_no_arguments!(argv)
+      run_problem(target, input)
+    when "bundle"
+      target = required_argument(argv, "TARGET")
+      ensure_no_arguments!(argv)
+      bundle_problem(target)
+    when "check-library"
+      ensure_no_arguments!(argv)
+      check_library
+    when "init-random"
+      target = required_argument(argv, "TARGET")
+      ensure_no_arguments!(argv)
+      initialize_random_test(target)
+    when "random"
+      target = required_argument(argv, "TARGET")
+      count = argv.shift || RANDOM_DEFAULT_COUNT.to_s
+      seed = argv.shift || RANDOM_DEFAULT_SEED.to_s
+      ensure_no_arguments!(argv)
+      exit(random_test(target, count, seed))
+    when "submit"
+      target = required_argument(argv, "TARGET")
+      ensure_no_arguments!(argv)
+      submit_problem(target)
+    when "help", "--help", "-h", nil
+      puts usage
+    else
+      abort "error: unknown command #{command.inspect}\n\n#{usage}"
+    end
+  rescue Interrupt
+    warn "\nInterrupted"
+    exit 130
+  rescue URI::InvalidURIError => e
+    abort "error: invalid URL: #{e.message}"
+  end
+
+  private
+
+  def create_problem(argv)
+    source = required_argument(argv, "URL or CONTEST")
+    task = argv.shift
+    ensure_no_arguments!(argv)
+
+    url = problem_url(source, task)
+    provision_problem(url)
+  end
+
+  def create_contest(argv)
+    source = required_argument(argv, "CONTEST")
+    ensure_no_arguments!(argv)
+    contest = fetch_contest(source)
+    contest_dir = @workspace_root.join(contest.fetch("id"))
+    prepare_directory!(contest_dir)
+
+    metadata_file = contest_dir.join(".contest.json")
+    refuse_symlink!(metadata_file)
+    if metadata_file.exist? && !metadata_file.file?
+      abort "error: #{relative(metadata_file)} must be a regular file"
+    end
+    metadata_file.write("#{JSON.pretty_generate(contest)}\n")
+
+    print_task_list(contest)
+    puts
+
+    contest.fetch("tasks").each do |task|
+      provision_problem(task.fetch("url"), label_override: task.fetch("directory"))
+      sleep 0.2
+    end
+
+    puts
+    puts "Contest ready: #{relative(contest_dir)}"
+  end
+
+  def list_tasks(argv)
+    source = required_argument(argv, "CONTEST")
+    ensure_no_arguments!(argv)
+    print_task_list(fetch_contest(source))
+  end
+
+  def provision_problem(url, label_override: nil)
+    contest_id, task_id = parse_problem_url(url)
+    label = label_override || task_id.delete_prefix("#{contest_id}_")
+    destination = @workspace_root.join(contest_id, label)
+    main_file = destination.join("main.rb")
+    url_file = destination.join(".problem-url")
+    test_dir = destination.join("test")
+
+    prepare_directory!(destination)
+    [main_file, url_file, test_dir].each { |path| refuse_symlink!(path) }
+    abort "error: #{relative(main_file)} must be a regular file" if main_file.exist? && !main_file.file?
+    abort "error: #{relative(url_file)} must be a regular file" if url_file.exist? && !url_file.file?
+    abort "error: #{relative(test_dir)} must be a directory" if test_dir.exist? && !test_dir.directory?
+
+    validate_existing_url(url_file, url)
+    FileUtils.cp(@project_root.join("template/main.rb"), main_file) unless main_file.exist?
+    url_file.write("#{url}\n")
+
+    ensure_oj!
+    if samples_complete?(test_dir)
+      puts "Samples already exist: #{relative(test_dir)}"
+    else
+      puts "Downloading samples to #{relative(destination)}..."
+      download_samples(url, destination, test_dir)
+    end
+
+    puts
+    puts "Ready: #{relative(main_file)}"
+    puts "Test:  bin/atcoder test #{relative(destination)}"
+  end
+
+  def add_case(target, name, input, expected)
+    validate_case_name!(name)
+    sources = [
+      existing_file!(input, "input"),
+      existing_file!(expected, "expected output")
+    ]
+    directory, = resolve_target(target)
+    test_dir = directory.join("test")
+    prepare_directory!(test_dir)
+    reject_symlinks_below!(test_dir)
+
+    destinations = %w[in out].map { |extension| test_dir.join("#{name}.#{extension}") }
+    destinations.each do |path|
+      refuse_symlink!(path)
+      abort "error: test case already exists: #{relative(path)}" if path.exist?
+    end
+
+    copy_case_pair!(sources, destinations)
+
+    puts "Added: #{relative(destinations.first)}"
+    puts "       #{relative(destinations.last)}"
+    puts "Test:  #{Shellwords.join(["bin/atcoder", "test", relative(directory)])}"
+  end
+
+  def initialize_random_test(target)
+    directory, = resolve_target(target)
+    random_dir = directory.join("random")
+    refuse_symlink!(random_dir)
+    if random_dir.exist? && !random_dir.directory?
+      abort "error: #{relative(random_dir)} must be a directory"
+    end
+    prepare_directory!(random_dir)
+    reject_symlinks_below!(random_dir)
+
+    destinations = RANDOM_FILES.map { |name| random_dir.join(name) }
+    destinations.each do |path|
+      refuse_symlink!(path)
+      next unless path.exist?
+
+      abort "error: #{relative(path)} must be a regular file" unless path.file?
+    end
+
+    created = []
+    destinations.each do |path|
+      next if path.exist?
+
+      FileUtils.cp(@project_root.join("template/random", path.basename), path)
+      created << path
+    end
+
+    created.each { |path| puts "Created: #{relative(path)}" }
+    puts "Random test files already exist; nothing changed." if created.empty?
+    puts
+    puts "Edit generator.rb and oracle.rb, then run:"
+    puts "  #{Shellwords.join(["bin/atcoder", "random", relative(directory)])}"
+  end
+
+  def fetch_contest(source)
+    contest_id, url = parse_contest_source(source)
+    html = fetch_html(URI("#{url}/tasks?lang=en"))
+    tasks = parse_task_rows(html, contest_id)
+    abort "error: no tasks found for #{contest_id}" if tasks.empty?
+    duplicate_directories = tasks
+      .group_by { |task| task.fetch("directory") }
+      .select { |_directory, items| items.length > 1 }
+    unless duplicate_directories.empty?
+      abort "error: duplicate task directories: #{duplicate_directories.keys.join(", ")}"
+    end
+
+    {
+      "id" => contest_id,
+      "url" => url,
+      "tasks" => tasks
+    }
+  end
+
+  def parse_contest_source(source)
+    if source.start_with?("https://", "http://")
+      uri = URI.parse(source)
+      unless uri.is_a?(URI::HTTPS) && uri.host == ATCODER_HOST
+        abort "error: only https://#{ATCODER_HOST}/ contest URLs are accepted"
+      end
+
+      match = uri.path.match(%r{\A/contests/([a-zA-Z0-9_-]+)/?\z})
+      abort "error: not an AtCoder contest URL: #{source}" unless match
+
+      contest_id = match[1].downcase
+      return [contest_id, "https://#{ATCODER_HOST}/contests/#{contest_id}"]
+    end
+
+    contest_id = source.downcase
+    abort "error: invalid contest ID: #{source}" unless contest_id.match?(/\A[a-z0-9_-]+\z/)
+
+    [contest_id, "https://#{ATCODER_HOST}/contests/#{contest_id}"]
+  end
+
+  def parse_task_rows(html, contest_id)
+    task_path = %r{\A/contests/#{Regexp.escape(contest_id)}/tasks/[a-zA-Z0-9_-]+\z}
+    seen = {}
+
+    html.scan(/<tr\b[^>]*>(.*?)<\/tr>/mi).filter_map do |row_match|
+      anchors = row_match.first.scan(/<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>(.*?)<\/a>/mi)
+      task_anchors = anchors.select { |href, _text| href.match?(task_path) }
+      next if task_anchors.empty?
+
+      href, label_html = task_anchors.first
+      name_html = task_anchors.drop(1).find { |candidate_href, _text| candidate_href == href }&.last
+      name_html ||= label_html
+      next if seen[href]
+
+      seen[href] = true
+      label = plain_text(label_html)
+      _parsed_contest, task_id = parse_problem_url("https://#{ATCODER_HOST}#{href}")
+
+      {
+        "label" => label,
+        "directory" => directory_label(label, task_id, contest_id),
+        "name" => plain_text(name_html),
+        "url" => "https://#{ATCODER_HOST}#{href}"
+      }
+    end
+  end
+
+  def directory_label(label, task_id, contest_id)
+    normalized = label.downcase.gsub(/[^a-z0-9_-]+/, "_").gsub(/\A_+|_+\z/, "")
+    normalized = task_id.delete_prefix("#{contest_id}_") if normalized.empty?
+    abort "error: invalid task label: #{label.inspect}" unless normalized.match?(/\A[a-z0-9_-]+\z/)
+
+    normalized
+  end
+
+  def plain_text(html)
+    CGI.unescapeHTML(html.gsub(/<[^>]*>/, " ")).gsub(/\s+/, " ").strip
+  end
+
+  def fetch_html(uri, redirects_left = 3)
+    request = Net::HTTP::Get.new(uri)
+    request["User-Agent"] = USER_AGENT
+    response = Net::HTTP.start(
+      uri.host,
+      uri.port,
+      use_ssl: true,
+      open_timeout: 10,
+      read_timeout: 30
+    ) { |http| http.request(request) }
+
+    case response
+    when Net::HTTPSuccess
+      response.body.force_encoding(Encoding::UTF_8)
+    when Net::HTTPRedirection
+      abort "error: too many redirects while fetching #{uri}" if redirects_left.zero?
+
+      location = response["location"]
+      abort "error: redirect without Location while fetching #{uri}" unless location
+
+      fetch_html(URI.join(uri, location), redirects_left - 1)
+    else
+      abort "error: failed to fetch #{uri} (HTTP #{response.code})"
+    end
+  rescue IOError, SocketError, SystemCallError, Timeout::Error => e
+    abort "error: failed to fetch #{uri}: #{e.message}"
+  end
+
+  def print_task_list(contest)
+    tasks = contest.fetch("tasks")
+    width = tasks.map { |task| task.fetch("label").length }.max
+
+    puts "#{contest.fetch("id")}: #{tasks.length} tasks"
+    tasks.each do |task|
+      printf "  %-#{width}s  %s\n", task.fetch("label"), task.fetch("name")
+      puts "      #{task.fetch("url")}"
+    end
+  end
+
+  def test_problem(target)
+    directory, main_file = resolve_target(target)
+    ensure_oj!
+
+    with_bundled_solution(main_file) do |bundle_file, library_files|
+      test_bundled_solution(directory, main_file, bundle_file, library_files)
+    end
+  end
+
+  def test_bundled_solution(directory, main_file, bundle_file, library_files)
+    return false unless check_bundled_syntax(directory, main_file, bundle_file, library_files)
+
+    command = Shellwords.join([@ruby, "--jit", bundle_file.basename.to_s])
+    puts "Samples: ruby --jit #{relative(main_file)} (bundled)"
+    system(@oj.to_s, "test", "-c", command, chdir: directory.to_s)
+  end
+
+  def run_problem(target, input)
+    directory, main_file = resolve_target(target)
+    options = { chdir: directory.to_s }
+    input_io = nil
+
+    if input
+      input_path = Pathname(input).expand_path
+      abort "error: input file not found: #{input}" unless input_path.file?
+
+      input_io = input_path.open("r")
+      options[:in] = input_io
+    end
+
+    with_bundled_solution(main_file) do |bundle_file, library_files|
+      unless check_bundled_syntax(directory, main_file, bundle_file, library_files)
+        abort "error: syntax check failed"
+      end
+
+      success = system(@ruby, "--jit", bundle_file.basename.to_s, **options)
+      exit(success ? 0 : 1)
+    end
+  ensure
+    input_io&.close
+  end
+
+  def random_test(target, count_argument, seed_argument)
+    count = positive_integer!(count_argument, "COUNT")
+    first_seed = integer!(seed_argument, "SEED")
+    timeout = random_timeout
+    directory, main_file = resolve_target(target)
+    generator, oracle = random_test_files!(directory)
+
+    with_bundled_solution(main_file) do |bundle_file, library_files|
+      return 2 unless check_bundled_syntax(directory, main_file, bundle_file, library_files)
+
+      [
+        [generator, generator.relative_path_from(directory).to_s],
+        [oracle, oracle.relative_path_from(directory).to_s]
+      ].each do |file, command_path|
+        puts "Syntax: #{relative(file)}"
+        return 2 unless system(@ruby, "-c", command_path, chdir: directory.to_s)
+      end
+
+      last_seed = first_seed + count - 1
+      puts
+      puts "Random: #{count} cases, seeds #{first_seed}..#{last_seed}, timeout #{timeout}s/process"
+
+      count.times do |offset|
+        seed = first_seed + offset
+        generator_result = capture_process(
+          [@ruby, generator.relative_path_from(directory).to_s, seed.to_s],
+          chdir: directory,
+          input: "",
+          timeout: timeout
+        )
+        unless generator_result.success?
+          report_process_failure("generator", seed, generator_result)
+          failure = save_random_failure(
+            directory,
+            seed,
+            "generator-error",
+            input: generator_result.stdout,
+            generator: generator_result,
+            timeout: timeout
+          )
+          puts "Saved: #{relative(failure)}"
+          return 2
+        end
+
+        generated_input = generator_result.stdout
+        oracle_result = capture_process(
+          [@ruby, oracle.relative_path_from(directory).to_s],
+          chdir: directory,
+          input: generated_input,
+          timeout: timeout
+        )
+        unless oracle_result.success?
+          report_process_failure("oracle", seed, oracle_result)
+          failure = save_random_failure(
+            directory,
+            seed,
+            "oracle-error",
+            input: generated_input,
+            generator: generator_result,
+            oracle: oracle_result,
+            timeout: timeout
+          )
+          puts "Saved: #{relative(failure)}"
+          return 2
+        end
+
+        main_result = capture_process(
+          [@ruby, "--jit", bundle_file.basename.to_s],
+          chdir: directory,
+          input: generated_input,
+          timeout: timeout
+        )
+        unless main_result.success?
+          report_process_failure("main.rb", seed, main_result)
+          failure = save_random_failure(
+            directory,
+            seed,
+            "solution-error",
+            input: generated_input,
+            expected: oracle_result.stdout,
+            actual: main_result.stdout,
+            generator: generator_result,
+            oracle: oracle_result,
+            main: main_result,
+            timeout: timeout
+          )
+          report_random_failure(directory, seed, failure)
+          return 1
+        end
+
+        unless normalized_output(main_result.stdout) == normalized_output(oracle_result.stdout)
+          warn "FAIL: output mismatch at seed #{seed}"
+          failure = save_random_failure(
+            directory,
+            seed,
+            "output-mismatch",
+            input: generated_input,
+            expected: oracle_result.stdout,
+            actual: main_result.stdout,
+            generator: generator_result,
+            oracle: oracle_result,
+            main: main_result,
+            timeout: timeout
+          )
+          report_random_failure(directory, seed, failure)
+          return 1
+        end
+
+        completed = offset + 1
+        if count >= 200 && (completed % 100).zero? && completed < count
+          puts "Passed: #{completed}/#{count} (last seed #{seed})"
+        end
+      end
+
+      puts "PASS: #{count} random cases"
+      0
+    end
+  end
+
+  def bundle_problem(target)
+    directory, main_file = resolve_target(target)
+    destination = directory.join(BUNDLE_FILENAME)
+    validate_bundle_destination!(destination)
+
+    with_bundled_solution(main_file) do |bundle_file, library_files|
+      unless check_bundled_syntax(directory, main_file, bundle_file, library_files)
+        abort "error: bundle syntax check failed"
+      end
+
+      File.chmod(0o644, bundle_file)
+      File.rename(bundle_file, destination)
+      puts "Bundled: #{relative(destination)}"
+      puts "Sources: #{library_files.length} library files + #{relative(main_file)}"
+    end
+  end
+
+  def check_library
+    library_files = bundled_library_files
+    library_files.each { |path| source_fragment(path, library: true) }
+
+    puts "Library: #{library_files.length} files valid"
+  end
+
+  def submit_problem(target)
+    directory, main_file = resolve_target(target)
+    url_file = directory.join(".problem-url")
+    abort "error: #{relative(url_file)} is missing; create the task with `bin/atcoder new`" unless url_file.file?
+    refuse_symlink!(url_file)
+    ensure_inside_workspace!(url_file)
+
+    url = url_file.read.strip
+    parse_problem_url(url)
+
+    with_bundled_solution(main_file) do |bundle_file, library_files|
+      unless test_bundled_solution(directory, main_file, bundle_file, library_files)
+        abort "error: sample tests failed; submission cancelled"
+      end
+
+      puts
+      puts "Submitting #{relative(main_file)} with #{library_files.length} library files as Ruby 3.4.5..."
+      success = system(
+        @oj.to_s,
+        "submit",
+        "--language",
+        RUBY_LANGUAGE_ID,
+        url,
+        bundle_file.basename.to_s,
+        chdir: directory.to_s
+      )
+      exit(success ? 0 : 1)
+    end
+  end
+
+  def problem_url(source, task)
+    if source.start_with?("https://", "http://")
+      abort "error: TASK must not be supplied with a URL" if task
+
+      return source
+    end
+
+    abort "error: TASK is required when CONTEST is used" unless task
+
+    contest = source.downcase
+    task_id = task.downcase
+    task_id = "#{contest}_#{task_id}" unless task_id.start_with?("#{contest}_")
+    "https://#{ATCODER_HOST}/contests/#{contest}/tasks/#{task_id}"
+  end
+
+  def parse_problem_url(url)
+    uri = URI.parse(url)
+    unless uri.is_a?(URI::HTTPS) && uri.host == ATCODER_HOST
+      abort "error: only https://#{ATCODER_HOST}/ task URLs are accepted"
+    end
+
+    match = uri.path.match(%r{\A/contests/([a-zA-Z0-9_-]+)/tasks/([a-zA-Z0-9_-]+)/?\z})
+    abort "error: not an AtCoder task URL: #{url}" unless match
+
+    [match[1].downcase, match[2].downcase]
+  end
+
+  def resolve_target(target)
+    path = @workspace_root.join(target).expand_path
+    path = path.join("main.rb") if path.directory?
+    abort "error: solution not found: #{relative(path)}" unless path.file?
+    abort "error: solution must be named main.rb" unless path.basename.to_s == "main.rb"
+    refuse_symlink!(path)
+    ensure_inside_workspace!(path)
+    test_dir = path.parent.join("test")
+    refuse_symlink!(test_dir)
+    if test_dir.exist?
+      abort "error: #{relative(test_dir)} must be a directory" unless test_dir.directory?
+      ensure_inside_workspace!(test_dir)
+    end
+
+    [path.parent, path]
+  end
+
+  def check_bundled_syntax(directory, main_file, bundle_file, library_files)
+    puts "Syntax: #{relative(main_file)} + #{library_files.length} library files"
+    system(@ruby, "-c", bundle_file.basename.to_s, chdir: directory.to_s)
+  end
+
+  def with_bundled_solution(main_file)
+    library_files = bundled_library_files
+    source = bundled_solution_source(main_file, library_files)
+
+    Tempfile.create([".atcoder-bundle-", ".rb"], main_file.parent.to_s) do |file|
+      file.binmode
+      file.write(source)
+      file.flush
+      file.close
+      yield Pathname(file.path), library_files
+    end
+  end
+
+  def bundled_solution_source(main_file, library_files)
+    bundled = +"#{FROZEN_STRING_LITERAL}\n"
+    bundled << "#{BUNDLE_MARKER}\n"
+    bundled << "# Sources are ordered lexically: library/**/*.rb, then main.rb\n"
+    bundled << "ATCODER_LIBRARY_LOADED = true unless defined?(ATCODER_LIBRARY_LOADED)\n\n"
+
+    library_files.each do |path|
+      label = source_label(path)
+      source = source_fragment(path, library: true)
+      bundled << "# --- begin #{label.dump} ---\n"
+      bundled << source
+      bundled << "\n" unless source.end_with?("\n")
+      bundled << "# --- end #{label.dump} ---\n\n"
+    end
+
+    main_label = source_label(main_file)
+    bundled << "# --- begin #{main_label.dump} ---\n"
+    bundled << source_fragment(main_file, library: false)
+    bundled
+  end
+
+  def bundled_library_files
+    refuse_symlink!(@library_dir)
+    abort "error: library directory is missing: #{@library_dir}" unless @library_dir.directory?
+    ensure_inside_project!(@library_dir)
+    reject_symlinks_below!(@library_dir)
+
+    Pathname.glob(@library_dir.join("**/*.rb").to_s)
+      .sort_by { |path| path.relative_path_from(@library_dir).to_s }
+      .map do |path|
+        abort "error: library source must be a regular file: #{path}" unless path.file?
+        ensure_inside_project!(path)
+        path
+      end
+  end
+
+  def source_fragment(path, library:)
+    source = path.binread.force_encoding(Encoding::UTF_8)
+    abort "error: source is not valid UTF-8: #{source_label(path)}" unless source.valid_encoding?
+    source = source.delete_prefix("\uFEFF")
+    RUBY_EOF_CONTROL_BYTES.each do |byte|
+      next unless source.include?(byte.chr)
+
+      abort format(
+        "error: source contains raw EOF control byte 0x%02X: %s",
+        byte,
+        source_label(path)
+      )
+    end
+
+    validate_fragment_syntax!(source, path)
+    validate_source_magic_comments!(source, path)
+    validate_no_require_relative!(source, path)
+    validate_library_source!(source, path) if library
+    source
+  end
+
+  def validate_fragment_syntax!(source, path)
+    label = source_label(path)
+    RubyVM::InstructionSequence.compile(source, label, label, 1)
+  rescue SyntaxError => e
+    abort "error: syntax error in #{label}:\n#{e.message}"
+  end
+
+  def validate_source_magic_comments!(source, path)
+    first_code_line = Ripper.lex(source)
+      .find { |_position, type, _token, _state| !RIPPER_PREAMBLE_TOKENS.include?(type) }
+      &.first
+      &.first
+    magic_comments = Prism.parse(source).magic_comments.select do |comment|
+      first_code_line.nil? || comment.key_loc.start_line < first_code_line
+    end
+    frozen = magic_comments
+      .select { |comment| comment.key.downcase.tr("-", "_") == "frozen_string_literal" }
+      .last
+      &.value
+      &.downcase
+    if frozen == "false"
+      abort "error: frozen_string_literal: false cannot be bundled: #{source_label(path)}"
+    end
+    if frozen != "true"
+      abort "error: source must declare frozen_string_literal: true: #{source_label(path)}"
+    end
+
+    encodings = magic_comments
+      .select { |comment| %w[coding encoding].include?(comment.key.downcase) }
+      .map(&:value)
+    encodings.each do |encoding|
+      next if Encoding.find(encoding) == Encoding::UTF_8
+
+      abort "error: only UTF-8 source files can be bundled: #{source_label(path)}"
+    end
+  rescue ArgumentError
+    abort "error: unknown source encoding cannot be bundled: #{source_label(path)}"
+  end
+
+  def validate_library_source!(source, path)
+    tokens = Ripper.lex(source)
+    if tokens.any? { |_position, type, _token, _state| type == :on___end__ }
+      abort "error: __END__ is not allowed in library sources: #{source_label(path)}"
+    end
+
+    has_data_constant = tokens.any? do |_position, type, token, _state|
+      type == :on_const && token == "DATA"
+    end
+    return unless has_data_constant
+
+    abort "error: DATA is not allowed in library sources: #{source_label(path)}"
+  end
+
+  def validate_no_require_relative!(source, path)
+    has_require_relative = Ripper.lex(source).any? do |_position, type, token, _state|
+      type == :on_ident && token == "require_relative"
+    end
+    return unless has_require_relative
+
+    abort "error: require_relative is not allowed in bundled sources: #{source_label(path)}"
+  end
+
+  def source_label(path)
+    project_relative = path.relative_path_from(@project_root)
+    return project_relative.to_s unless project_relative.each_filename.first == ".."
+
+    relative(path)
+  rescue ArgumentError
+    relative(path)
+  end
+
+  def ensure_inside_project!(path)
+    project = @project_root.realpath
+    resolved = path.realpath
+    return if resolved == project || resolved.to_s.start_with?("#{project}#{File::SEPARATOR}")
+
+    abort "error: path escapes the project: #{path}"
+  end
+
+  def validate_bundle_destination!(destination)
+    refuse_symlink!(destination)
+    ensure_inside_workspace!(destination.parent)
+    return unless destination.exist?
+
+    abort "error: #{relative(destination)} must be a regular file" unless destination.file?
+    return if generated_bundle?(destination)
+
+    abort "error: refusing to overwrite non-generated file: #{relative(destination)}"
+  end
+
+  def generated_bundle?(path)
+    path.open("r") { |file| file.each_line.first(2).any? { |line| line.chomp == BUNDLE_MARKER } }
+  end
+
+  def validate_case_name!(name)
+    unless name.length <= 64 && name.match?(CASE_NAME_PATTERN)
+      abort "error: NAME must match #{CASE_NAME_PATTERN.inspect} and be at most 64 characters"
+    end
+    return unless name.match?(/\Asample-\d+\z/)
+
+    abort "error: #{name.inspect} is reserved for an official sample"
+  end
+
+  def existing_file!(argument, label)
+    path = Pathname(argument).expand_path
+    abort "error: #{label} file not found: #{argument}" unless path.file?
+
+    path
+  end
+
+  def copy_case_pair!(sources, destinations)
+    created = []
+    sources.zip(destinations).each do |source, destination|
+      File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o644) do |output|
+        created << destination
+        source.open("rb") { |input| IO.copy_stream(input, output) }
+      end
+    end
+  rescue StandardError
+    created.each do |path|
+      File.delete(path) if path.file? && !path.symlink?
+    end
+    raise
+  end
+
+  def random_test_files!(directory)
+    random_dir = directory.join("random")
+    refuse_symlink!(random_dir)
+    if random_dir.exist? && !random_dir.directory?
+      abort "error: #{relative(random_dir)} must be a directory"
+    end
+    unless random_dir.directory?
+      command = Shellwords.join(["bin/atcoder", "init-random", relative(directory)])
+      abort "error: random test is not initialized; run `#{command}`"
+    end
+    ensure_inside_workspace!(random_dir)
+
+    RANDOM_FILES.map do |name|
+      path = random_dir.join(name)
+      refuse_symlink!(path)
+      abort "error: missing random test file: #{relative(path)}" unless path.file?
+      ensure_inside_workspace!(path)
+      path
+    end
+  end
+
+  def positive_integer!(argument, name)
+    value = integer!(argument, name)
+    abort "error: #{name} must be greater than zero" unless value.positive?
+
+    value
+  end
+
+  def integer!(argument, name)
+    Integer(argument, 10)
+  rescue ArgumentError
+    abort "error: #{name} must be an integer: #{argument.inspect}"
+  end
+
+  def random_timeout
+    value = Float(ENV.fetch("ATCODER_RANDOM_TIMEOUT", RANDOM_DEFAULT_TIMEOUT.to_s))
+    abort "error: ATCODER_RANDOM_TIMEOUT must be a positive finite number" unless value.positive? && value.finite?
+
+    value
+  rescue ArgumentError
+    abort "error: ATCODER_RANDOM_TIMEOUT must be a positive finite number"
+  end
+
+  def capture_process(command, chdir:, input:, timeout:)
+    pid = nil
+    status = nil
+    timed_out = false
+    output_limited = false
+    background_processes = false
+
+    Tempfile.create("atcoder-random-stdin") do |stdin_file|
+      Tempfile.create("atcoder-random-stdout") do |stdout_file|
+        Tempfile.create("atcoder-random-stderr") do |stderr_file|
+          [stdin_file, stdout_file, stderr_file].each(&:binmode)
+          stdin_file.write(input)
+          stdin_file.rewind
+
+          pid = Process.spawn(
+            *command,
+            chdir: chdir.to_s,
+            in: stdin_file,
+            out: stdout_file,
+            err: stderr_file,
+            pgroup: true,
+            rlimit_fsize: RANDOM_OUTPUT_LIMIT
+          )
+          deadline = monotonic_time + timeout
+
+          loop do
+            if output_limit_reached?(stdout_file, stderr_file)
+              output_limited = true
+              status = terminate_process_group(pid)
+              break
+            end
+
+            if (waited = Process.waitpid2(pid, Process::WNOHANG))
+              status = waited.last
+              output_limited = output_limit_reached?(stdout_file, stderr_file)
+              background_processes = process_group_alive?(pid)
+              signal_process_group("KILL", pid) if background_processes
+              break
+            end
+
+            if monotonic_time >= deadline
+              timed_out = true
+              status = terminate_process_group(pid)
+              break
+            end
+
+            sleep 0.01
+          end
+
+          stdout_file.rewind
+          stderr_file.rewind
+          return ProcessResult.new(
+            stdout: stdout_file.read(RANDOM_OUTPUT_LIMIT) || "".b,
+            stderr: stderr_file.read(RANDOM_OUTPUT_LIMIT) || "".b,
+            status: status,
+            timed_out: timed_out,
+            output_limited: output_limited,
+            background_processes: background_processes
+          )
+        end
+      end
+    end
+  ensure
+    if pid
+      terminate_process_group(pid) if status.nil?
+      signal_process_group("KILL", pid)
+    end
+  end
+
+  def terminate_process_group(pid)
+    signal_process_group("TERM", pid)
+    deadline = monotonic_time + 0.2
+    status = nil
+
+    while monotonic_time < deadline
+      if (waited = Process.waitpid2(pid, Process::WNOHANG))
+        status = waited.last
+        break
+      end
+      sleep 0.01
+    end
+
+    signal_process_group("KILL", pid)
+    return status if status
+
+    Process.waitpid2(pid).last
+  rescue Errno::ECHILD
+    status
+  end
+
+  def signal_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  rescue Errno::EPERM
+    begin
+      Process.kill(signal, pid)
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
+    end
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def output_limit_reached?(*files)
+    files.any? { |file| file.stat.size >= RANDOM_OUTPUT_LIMIT }
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def normalized_output(output)
+    output.gsub("\r\n", "\n")
+  end
+
+  def report_process_failure(label, seed, result)
+    reason = if result.timed_out
+      "timed out"
+    elsif result.output_limited
+      "reached the #{RANDOM_OUTPUT_LIMIT / 1024 / 1024} MiB output limit"
+    elsif result.background_processes
+      "left background processes running"
+    elsif result.status&.signaled?
+      "terminated by signal #{result.status.termsig}"
+    else
+      "exited with status #{result.status&.exitstatus || "unknown"}"
+    end
+
+    warn "FAIL: #{label} #{reason} at seed #{seed}"
+    return if result.stderr.empty?
+
+    warn "#{label} stderr:"
+    preview = result.stderr.byteslice(0, RANDOM_STDERR_PREVIEW)
+    warn preview.dup.force_encoding(Encoding::UTF_8).scrub
+    warn "... stderr truncated; full output is saved with the failure" if result.stderr.bytesize > preview.bytesize
+  end
+
+  def save_random_failure(
+    directory,
+    seed,
+    kind,
+    input:,
+    expected: nil,
+    actual: nil,
+    generator: nil,
+    oracle: nil,
+    main: nil,
+    timeout:
+  )
+    failures_dir = directory.join("random/failures")
+    refuse_symlink!(failures_dir)
+    if failures_dir.exist? && !failures_dir.directory?
+      abort "error: #{relative(failures_dir)} must be a directory"
+    end
+    prepare_directory!(failures_dir)
+    failure = Pathname(Dir.mktmpdir("seed-#{seed}-", failures_dir.to_s))
+
+    failure.join("input.txt").binwrite(input)
+    failure.join("expected.txt").binwrite(expected) unless expected.nil?
+    failure.join("actual.txt").binwrite(actual) unless actual.nil?
+    {
+      "generator" => generator,
+      "oracle" => oracle,
+      "main" => main
+    }.each do |label, result|
+      next unless result && !result.stderr.empty?
+
+      failure.join("#{label}.stderr").binwrite(result.stderr)
+    end
+    failure.join("meta.json").write(
+      "#{JSON.pretty_generate({
+        "kind" => kind,
+        "seed" => seed,
+        "timeout_seconds" => timeout,
+        "processes" => {
+          "generator" => process_metadata(generator),
+          "oracle" => process_metadata(oracle),
+          "main" => process_metadata(main)
+        }.compact
+      })}\n"
+    )
+    failure
+  end
+
+  def process_metadata(result)
+    return unless result
+
+    {
+      "success" => result.success?,
+      "timed_out" => result.timed_out,
+      "output_limited" => result.output_limited,
+      "background_processes" => result.background_processes,
+      "exit_status" => result.status&.exitstatus,
+      "signal" => result.status&.termsig
+    }
+  end
+
+  def report_random_failure(directory, seed, failure)
+    puts "Saved: #{relative(failure)}"
+    puts "Reproduce:"
+    puts "  #{Shellwords.join([
+      "bin/atcoder",
+      "random",
+      relative(directory),
+      "1",
+      seed.to_s
+    ])}"
+    puts "Promote to a regular test after checking the oracle:"
+    puts "  #{Shellwords.join([
+      "bin/atcoder",
+      "add-case",
+      relative(directory),
+      "random-#{seed}",
+      failure.join("input.txt").to_s,
+      failure.join("expected.txt").to_s
+    ])}"
+  end
+
+  def prepare_directory!(path)
+    FileUtils.mkdir_p(@workspace_root)
+    ensure_existing_ancestor_inside_workspace!(path)
+    FileUtils.mkdir_p(path)
+    ensure_inside_workspace!(path)
+  end
+
+  def ensure_existing_ancestor_inside_workspace!(path)
+    ancestor = path
+    ancestor = ancestor.parent until ancestor.exist?
+
+    workspace = @workspace_root.realpath
+    resolved = ancestor.realpath
+    return if resolved == workspace || resolved.to_s.start_with?("#{workspace}#{File::SEPARATOR}")
+
+    abort "error: path escapes the workspace: #{path}"
+  end
+
+  def ensure_inside_workspace!(path)
+    workspace = @workspace_root.realpath
+    resolved = path.realpath
+    return if resolved == workspace || resolved.to_s.start_with?("#{workspace}#{File::SEPARATOR}")
+
+    abort "error: path escapes the workspace: #{path}"
+  end
+
+  def refuse_symlink!(path)
+    abort "error: symbolic links are not allowed here: #{relative(path)}" if path.symlink?
+  end
+
+  def validate_existing_url(url_file, url)
+    return unless url_file.file?
+
+    existing = url_file.read.strip
+    return if existing == url
+
+    abort "error: #{relative(url_file)} already points to #{existing}"
+  end
+
+  def samples_complete?(test_dir)
+    return false unless test_dir.directory?
+
+    reject_symlinks_below!(test_dir)
+    marker = test_dir.join(SAMPLE_MARKER)
+    return false unless marker.file?
+
+    names = marker.readlines(chomp: true).reject(&:empty?)
+    return false unless valid_sample_set?(names)
+
+    names.all? do |name|
+      sample = test_dir.join(name)
+      !sample.symlink? && sample.file?
+    end
+  end
+
+  def download_samples(url, destination, test_dir)
+    Dir.mktmpdir(".atcoder-samples-", destination.to_s) do |temporary_directory|
+      temporary = Pathname(temporary_directory)
+      success = system(
+        @oj.to_s,
+        "download",
+        "--directory",
+        temporary.to_s,
+        url,
+        chdir: destination.to_s
+      )
+      abort login_hint unless success
+
+      reject_symlinks_below!(temporary)
+      names = temporary.children.select(&:file?).map { |path| path.basename.to_s }.sort
+      abort "error: downloaded samples are incomplete" unless valid_sample_set?(names)
+
+      FileUtils.mkdir_p(test_dir)
+      ensure_inside_workspace!(test_dir)
+      reject_symlinks_below!(test_dir)
+      validate_sample_conflicts!(temporary, test_dir, names)
+
+      names.each do |name|
+        destination_file = test_dir.join(name)
+        FileUtils.cp(temporary.join(name), destination_file) unless destination_file.exist?
+      end
+      test_dir.join(SAMPLE_MARKER).write("#{names.join("\n")}\n")
+    end
+  end
+
+  def valid_sample_set?(names)
+    return false if names.empty? || names.any? { |name| !name.match?(SAMPLE_FILE_PATTERN) }
+
+    inputs = names.grep(/\.in\z/).map { |name| name.delete_suffix(".in") }
+    outputs = names.grep(/\.out\z/).map { |name| name.delete_suffix(".out") }
+    !inputs.empty? && inputs.sort == outputs.sort
+  end
+
+  def validate_sample_conflicts!(source_dir, test_dir, names)
+    names.each do |name|
+      existing = test_dir.join(name)
+      refuse_symlink!(existing)
+      next unless existing.exist?
+
+      abort "error: #{relative(existing)} must be a regular file" unless existing.file?
+      next if existing.binread == source_dir.join(name).binread
+
+      abort "error: existing sample differs from AtCoder: #{relative(existing)}"
+    end
+  end
+
+  def reject_symlinks_below!(directory)
+    return unless directory.directory?
+
+    Find.find(directory.to_s) do |entry|
+      path = Pathname(entry)
+      next if path == directory
+
+      refuse_symlink!(path)
+    end
+  end
+
+  def ensure_oj!
+    return if @oj.executable?
+
+    abort "error: online-judge-tools is not installed; run `bin/setup`"
+  end
+
+  def required_argument(argv, name)
+    argv.shift || abort("error: #{name} is required\n\n#{usage}")
+  end
+
+  def ensure_no_arguments!(argv)
+    abort "error: too many arguments\n\n#{usage}" unless argv.empty?
+  end
+
+  def relative(path)
+    path.relative_path_from(@workspace_root).to_s
+  rescue ArgumentError
+    path.to_s
+  end
+
+  def login_hint
+    <<~MESSAGE
+      error: failed to download samples
+
+      If AtCoder requires authentication, log in with your browser and run:
+        make login
+    MESSAGE
+  end
+
+  def usage
+    <<~USAGE
+      Usage:
+        bin/atcoder contest CONTEST
+        bin/atcoder tasks CONTEST
+        bin/atcoder new URL
+        bin/atcoder new CONTEST TASK
+        bin/atcoder add-case TARGET NAME INPUT EXPECTED
+        bin/atcoder test TARGET
+        bin/atcoder run TARGET [INPUT]
+        bin/atcoder bundle TARGET
+        bin/atcoder check-library
+        bin/atcoder init-random TARGET
+        bin/atcoder random TARGET [COUNT] [SEED]
+        bin/atcoder submit TARGET
+
+      Examples:
+        bin/atcoder contest abc468
+        bin/atcoder tasks abc468
+        bin/atcoder new abc468 a
+        bin/atcoder new https://atcoder.jp/contests/abc468/tasks/abc468_a
+        bin/atcoder add-case abc468/a custom-1 input.txt expected.txt
+        bin/atcoder test abc468/a
+        bin/atcoder run abc468/a input.txt
+        bin/atcoder bundle abc468/a
+        bin/atcoder check-library
+        bin/atcoder init-random abc468/a
+        bin/atcoder random abc468/a 1000 1
+        bin/atcoder submit abc468/a
+    USAGE
+  end
+end
+
+AtCoderWorkspace.new.run(ARGV) if $PROGRAM_NAME == __FILE__

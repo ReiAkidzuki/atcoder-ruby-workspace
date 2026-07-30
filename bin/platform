@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+atcoder_os_name() {
+  printf '%s\n' "${ATCODER_OS:-$(uname -s)}"
+}
+
+atcoder_gnu_time_command() {
+  local os_name
+  local candidate
+
+  os_name="$(atcoder_os_name)"
+  case "$os_name" in
+    Darwin)
+      candidate="$(type -P gtime || true)"
+      ;;
+    Linux)
+      candidate="$(type -P time || true)"
+      ;;
+    *)
+      candidate="$(type -P gtime || type -P time || true)"
+      ;;
+  esac
+
+  [[ -n "$candidate" ]] || return 1
+  "$candidate" --version 2>&1 | grep -qi 'GNU' || return 1
+  printf '%s\n' "$candidate"
+}

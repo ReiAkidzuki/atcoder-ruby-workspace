@@ -1,0 +1,24 @@
+.cache/
+.venv/
+.ruby-lsp/
+
+# macOS / editors
+.DS_Store
+*.swp
+*.swo
+
+# Local credentials and environment variables
+.env
+.env.*
+!.env.example
+*.cookie
+cookie.jar
+
+# online-judge-tools temporary output
+*.actual
+*.diff
+.atcoder-bundle-*.rb
+**/submission.rb
+
+# Generated counterexamples (promote checked cases with `bin/atcoder add-case`)
+**/random/failures/

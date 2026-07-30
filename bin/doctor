@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$project_root"
+source "$project_root/bin/platform"
+
+expected_ruby="$(tr -d '[:space:]' < .ruby-version)"
+ruby_command=(rbenv exec ruby)
+actual_ruby="$("${ruby_command[@]}" -e 'print RUBY_VERSION')"
+status=0
+
+check() {
+  local label="$1"
+  shift
+
+  if "$@" >/dev/null 2>&1; then
+    printf 'ok  %s\n' "$label"
+  else
+    printf 'ng  %s\n' "$label"
+    status=1
+  fi
+}
+
+if [[ "$actual_ruby" == "$expected_ruby" ]]; then
+  printf 'ok  Ruby %s\n' "$actual_ruby"
+else
+  printf 'ng  Ruby %s (expected %s)\n' "$actual_ruby" "$expected_ruby"
+  status=1
+fi
+
+check "Ruby syntax check" "${ruby_command[@]}" -c template/main.rb
+check "Library loader" "${ruby_command[@]}" -c library.rb
+check "Random generator template" "${ruby_command[@]}" -c template/random/generator.rb
+check "Random oracle template" "${ruby_command[@]}" -c template/random/oracle.rb
+check "Ruby JIT" "${ruby_command[@]}" --jit -e 'abort unless RubyVM::YJIT.enabled?'
+check "online-judge-tools" "$project_root/.venv/bin/oj" --version
+check "aclogin" "$project_root/.venv/bin/aclogin" --help
+if gnu_time="$(atcoder_gnu_time_command)"; then
+  check "GNU time" "$gnu_time" --version
+else
+  printf 'ng  GNU time\n'
+  status=1
+fi
+check "AtCoder helper" "$project_root/bin/atcoder" --help
+check "Library bundle rules" "$project_root/bin/atcoder" check-library
+
+while IFS= read -r -d '' library_file; do
+  check "Library syntax: ${library_file#"$project_root/"}" "${ruby_command[@]}" -c "$library_file"
+done < <(find "$project_root/library" -type f -name '*.rb' -print0)
+
+exit "$status"

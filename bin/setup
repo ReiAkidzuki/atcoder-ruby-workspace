@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$project_root"
+source "$project_root/bin/platform"
+
+ruby_version="$(tr -d '[:space:]' < .ruby-version)"
+
+if ! command -v rbenv >/dev/null 2>&1; then
+  echo "error: rbenv is required" >&2
+  exit 1
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv is required (https://docs.astral.sh/uv/)" >&2
+  exit 1
+fi
+
+if ! gnu_time="$(atcoder_gnu_time_command)"; then
+  case "$(atcoder_os_name)" in
+    Darwin)
+      if ! command -v brew >/dev/null 2>&1; then
+        echo "error: Homebrew is required to install GNU time on macOS" >&2
+        exit 1
+      fi
+
+      echo "Installing GNU time for online-judge-tools..."
+      brew install gnu-time
+      ;;
+    Linux)
+      echo "error: GNU time is required; install the 'time' package" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: GNU time is required" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+echo "Installing Ruby ${ruby_version} with rbenv..."
+rbenv install -s "$ruby_version"
+export RBENV_VERSION="$ruby_version"
+
+export UV_CACHE_DIR="$project_root/.cache/uv"
+echo "Installing oj and aclogin into .venv..."
+uv sync --locked --python 3.10
+
+echo
+"$project_root/bin/doctor"
