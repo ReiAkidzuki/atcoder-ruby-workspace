@@ -275,7 +275,7 @@ make self-test
 
 The self-tests live under `test/`.
 They use isolated temporary directories and fake external commands, so they do not modify problem files or require login or network access.
-The suite covers library ordering, automatic bundling, manual `bundle`, random testing, submission snapshots, overwrite protection, source validation, and OS-specific command selection.
+The suite covers library ordering, automatic bundling, manual `bundle`, random testing, submission snapshots, overwrite protection, source validation, login tool discovery, and OS-specific command selection.
 GitHub Actions runs the same self-tests on both macOS and Ubuntu.
 
 ## Differences from AtCoder

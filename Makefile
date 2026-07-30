@@ -34,7 +34,7 @@ self-test:
 	@$(RUBY) test/run.rb
 
 login:
-	@./.venv/bin/aclogin --tools oj
+	@PATH="$(CURDIR)/.venv/bin:$$PATH" ./.venv/bin/aclogin --tools oj
 
 contest:
 	@test -n "$(CONTEST)" || (echo "CONTEST is required"; exit 2)
