@@ -43,17 +43,98 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_equal payload, stdout
   end
 
-  def test_bundle_rejects_hyphenated_frozen_string_literal_false
+  def test_bundle_removes_explicit_false_and_uses_ruby_default
+    write_library("value.rb", <<~RUBY)
+      VALUE_FROM_LIBRARY = "library"
+    RUBY
     write_main(<<~RUBY)
       # -*- frozen-string-literal: false -*-
 
-      puts "mutable"
+      value_from_main = "main"
+      puts [VALUE_FROM_LIBRARY.frozen?, value_from_main.frozen?].join(",")
+    RUBY
+
+    _stdout, stderr, status = atcoder("bundle", "contest/a")
+
+    assert_predicate status, :success?, stderr
+    submission = @problem.join("submission.rb")
+    source = submission.binread
+    refute_includes source, "frozen_string_literal"
+    refute_includes source, "frozen-string-literal"
+    run_stdout, run_stderr, run_status = ruby(submission)
+    assert_predicate run_status, :success?, run_stderr
+    assert_equal "false,false\n", run_stdout
+  end
+
+  def test_bundle_rejects_conflicting_frozen_string_literal_values
+    write_library("value.rb", <<~RUBY)
+      # frozen_string_literal: true
+
+      VALUE_FROM_LIBRARY = "frozen"
+    RUBY
+    write_main(<<~RUBY)
+      # frozen_string_literal: false
+
+      puts VALUE_FROM_LIBRARY
     RUBY
 
     _stdout, stderr, status = atcoder("bundle", "contest/a")
 
     refute_predicate status, :success?
-    assert_includes stderr, "frozen_string_literal: false cannot be bundled"
+    assert_includes stderr, "conflicting frozen_string_literal values"
+  end
+
+  def test_check_library_rejects_conflicting_frozen_string_literal_values
+    write_library("true.rb", <<~RUBY)
+      # frozen_string_literal: true
+
+      TRUE_VALUE = "true"
+    RUBY
+    write_library("false.rb", <<~RUBY)
+      # frozen_string_literal: false
+
+      FALSE_VALUE = "false"
+    RUBY
+
+    _stdout, stderr, status = atcoder("check-library")
+
+    refute_predicate status, :success?
+    assert_includes stderr, "conflicting frozen_string_literal values"
+  end
+
+  def test_bundle_removes_per_file_frozen_string_literal_comments
+    write_library("value.rb", <<~RUBY)
+      # frozen_string_literal: true
+
+      VALUE_FROM_LIBRARY = "library"
+    RUBY
+    write_library("other.rb", <<~RUBY)
+      # -*- coding: UTF-8; frozen-string-literal: true -*-
+
+      OTHER_VALUE_FROM_LIBRARY = "other"
+    RUBY
+    write_main(<<~RUBY)
+      value_from_main = "main"
+      puts [
+        VALUE_FROM_LIBRARY.frozen?,
+        OTHER_VALUE_FROM_LIBRARY.frozen?,
+        value_from_main.frozen?
+      ].join(",")
+    RUBY
+
+    _stdout, stderr, status = atcoder("bundle", "contest/a")
+
+    assert_predicate status, :success?, stderr
+    source = @problem.join("submission.rb").binread
+    assert_equal "# frozen_string_literal: true\n", source.lines.first
+    assert_equal(
+      1,
+      source.lines.count { |line| line.chomp == "# frozen_string_literal: true" }
+    )
+    refute_includes source, "frozen-string-literal"
+    run_stdout, run_stderr, run_status = ruby(@problem.join("submission.rb"))
+    assert_predicate run_status, :success?, run_stderr
+    assert_equal "true,true,true\n", run_stdout
   end
 
   def test_library_allows_end_marker_text_inside_heredoc
@@ -78,30 +159,37 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_equal "__END__\n", stdout
   end
 
-  def test_library_magic_comment_after_code_is_not_a_declaration
+  def test_library_frozen_comment_after_code_is_ordinary_and_optional
     write_library("value.rb", <<~RUBY)
       VALUE_FROM_LIBRARY = "mutable"
       # frozen_string_literal: true
     RUBY
-    write_main(<<~RUBY)
-      # frozen_string_literal: true
 
-      puts VALUE_FROM_LIBRARY
-    RUBY
+    stdout, stderr, status = atcoder("check-library")
 
-    _stdout, stderr, status = atcoder("check-library")
-
-    refute_predicate status, :success?
-    assert_includes stderr, "must declare frozen_string_literal: true"
+    assert_predicate status, :success?, stderr
+    assert_includes stdout, "1 files valid"
   end
 
-  def test_main_requires_frozen_string_literal_declaration
-    write_main("puts \"missing declaration\"\n")
+  def test_main_and_library_may_omit_frozen_string_literal
+    write_library("value.rb", <<~RUBY)
+      VALUE_FROM_LIBRARY = "library"
+    RUBY
+    write_main(<<~RUBY)
+      value_from_main = "main"
+      puts [VALUE_FROM_LIBRARY.frozen?, value_from_main.frozen?].join(",")
+    RUBY
 
     _stdout, stderr, status = atcoder("bundle", "contest/a")
 
-    refute_predicate status, :success?
-    assert_includes stderr, "must declare frozen_string_literal: true"
+    assert_predicate status, :success?, stderr
+    submission = @problem.join("submission.rb")
+    source = submission.binread
+    refute_includes source, "frozen_string_literal"
+    assert_equal "# generated_by: bin/atcoder bundle\n", source.lines.first
+    run_stdout, run_stderr, run_status = ruby(submission)
+    assert_predicate run_status, :success?, run_stderr
+    assert_equal "false,false\n", run_stdout
   end
 
   def test_bundle_orders_nested_libraries_before_main_and_is_executable
@@ -342,15 +430,20 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_empty temporary_bundles
   end
 
-  def test_magic_comment_text_inside_a_string_is_not_a_declaration
+  def test_magic_comment_text_inside_a_string_does_not_require_a_declaration
     write_library("notes.rb", <<~RUBY)
       NOTES = "# frozen_string_literal: true"
     RUBY
+    write_main(<<~RUBY)
+      puts NOTES
+    RUBY
 
-    _stdout, stderr, status = atcoder("check-library")
+    _stdout, stderr, status = atcoder("bundle", "contest/a")
 
-    refute_predicate status, :success?
-    assert_includes stderr, "must declare frozen_string_literal: true"
+    assert_predicate status, :success?, stderr
+    run_stdout, run_stderr, run_status = ruby(@problem.join("submission.rb"))
+    assert_predicate run_status, :success?, run_stderr
+    assert_equal "# frozen_string_literal: true\n", run_stdout
   end
 
   def test_require_relative_is_rejected_only_when_it_is_code
@@ -483,14 +576,13 @@ class AtCoderWorkspaceTest < Minitest::Test
   def test_new_template_loads_the_library_when_run_directly
     FileUtils.cp(PROJECT_ROOT.join("library.rb"), @sandbox.join("library.rb"))
     write_library("direct.rb", <<~RUBY)
-      # frozen_string_literal: true
-
       DIRECT_LIBRARY_VALUE = 12
     RUBY
     source = PROJECT_ROOT.join("template/main.rb").read.sub(
       "  # 解答をここに書く",
       "  puts DIRECT_LIBRARY_VALUE"
     )
+    refute_includes source, "frozen_string_literal"
     write_main(source)
 
     stdout, stderr, status = ruby(@problem.join("main.rb"))

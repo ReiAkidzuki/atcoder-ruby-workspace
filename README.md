@@ -140,16 +140,19 @@ Symbolic links are not allowed anywhere under `library/`, regardless of their ex
 The `test`, `run`, `random`, and `submit` commands bundle the latest libraries with the target `main.rb` into a temporary file every time they run.
 They do not modify the existing `main.rb`.
 During random testing, libraries are bundled only with the solution; the generator and oracle remain independent.
-For submission, `oj` sends the exact temporary file that passed all local tests, including official samples and manual cases.
+For submission, the exact file that passed all local tests is saved as `submission.rb` and handed to the browser.
 A newly generated `main.rb` also loads libraries from the project root when run directly.
 A `main.rb` not based on the current template may not load libraries when invoked directly with `ruby`; `bin/atcoder run` always creates the bundle first.
 
 Libraries may load standard-library files, for example with `require "set"`.
 `require_relative` is rejected during bundling in both `main.rb` and library files because its meaning changes after files are combined.
 `__END__` and `DATA` are also unavailable in library files.
-Save `main.rb` and every library as UTF-8, and place `# frozen_string_literal: true` before executable code.
-Normally, put it on the first line.
-Frozen string literals are enabled for the complete bundled solution.
+Save `main.rb` and every library as UTF-8.
+AtCoder runs Ruby as [`ruby --jit Main.rb`](https://img.atcoder.jp/file/language-update/2025-10/language-list.html), without forcing frozen string literals, so the template follows Ruby's default and does not add `# frozen_string_literal: true`.
+You do not need to write that directive in solution or library files.
+If existing files explicitly opt in with `true`, bundling promotes it to one solution-wide directive and removes duplicate per-file lines.
+In that case, literals in files that omitted the directive are frozen as well.
+An explicit `false` uses Ruby's default; mixing `true` and `false` in one solution is rejected because a single bundled file cannot preserve both policies.
 Because `__FILE__` and `__dir__` refer to the bundled file, avoid library implementations that access external files.
 Self-tests guarded by `if __FILE__ == $PROGRAM_NAME` also run after bundling, so do not place them in library files.
 

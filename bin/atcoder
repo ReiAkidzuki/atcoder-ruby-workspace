@@ -55,6 +55,7 @@ class AtCoderWorkspace
       !timed_out && !output_limited && !background_processes && status&.success?
     end
   end
+  SourceFragment = Struct.new(:source, :frozen_string_literal, keyword_init: true)
 
   def initialize
     @project_root = Pathname(__dir__).parent.expand_path
@@ -555,7 +556,8 @@ class AtCoderWorkspace
 
   def check_library
     library_files = bundled_library_files
-    library_files.each { |path| source_fragment(path, library: true) }
+    fragments = library_files.map { |path| source_fragment(path, library: true) }
+    resolve_frozen_string_literal(fragments)
 
     puts "Library: #{library_files.length} files valid"
   end
@@ -750,24 +752,41 @@ class AtCoderWorkspace
   end
 
   def bundled_solution_source(main_file, library_files)
-    bundled = +"#{FROZEN_STRING_LITERAL}\n"
+    library_fragments = library_files.map do |path|
+      [path, source_fragment(path, library: true)]
+    end
+    main_fragment = source_fragment(main_file, library: false)
+    frozen_string_literal = resolve_frozen_string_literal(
+      [*library_fragments.map(&:last), main_fragment]
+    )
+
+    bundled = +""
+    bundled << "#{FROZEN_STRING_LITERAL}\n" if frozen_string_literal
     bundled << "#{BUNDLE_MARKER}\n"
     bundled << "# Sources are ordered lexically: library/**/*.rb, then main.rb\n"
     bundled << "ATCODER_LIBRARY_LOADED = true unless defined?(ATCODER_LIBRARY_LOADED)\n\n"
 
-    library_files.each do |path|
+    library_fragments.each do |path, fragment|
       label = source_label(path)
-      source = source_fragment(path, library: true)
       bundled << "# --- begin #{label.dump} ---\n"
-      bundled << source
-      bundled << "\n" unless source.end_with?("\n")
+      bundled << fragment.source
+      bundled << "\n" unless fragment.source.end_with?("\n")
       bundled << "# --- end #{label.dump} ---\n\n"
     end
 
     main_label = source_label(main_file)
     bundled << "# --- begin #{main_label.dump} ---\n"
-    bundled << source_fragment(main_file, library: false)
+    bundled << main_fragment.source
     bundled
+  end
+
+  def resolve_frozen_string_literal(fragments)
+    values = fragments.map(&:frozen_string_literal).compact.uniq
+    if values.length > 1
+      abort "error: conflicting frozen_string_literal values cannot be bundled"
+    end
+
+    values.first == true
   end
 
   def bundled_library_files
@@ -800,10 +819,14 @@ class AtCoderWorkspace
     end
 
     validate_fragment_syntax!(source, path)
-    validate_source_magic_comments!(source, path)
+    frozen_string_literal, frozen_magic_comment_lines =
+      validate_source_magic_comments!(source, path)
     validate_no_require_relative!(source, path)
     validate_library_source!(source, path) if library
-    source
+    SourceFragment.new(
+      source: strip_magic_comment_lines(source, frozen_magic_comment_lines),
+      frozen_string_literal:
+    )
   end
 
   def validate_fragment_syntax!(source, path)
@@ -821,16 +844,15 @@ class AtCoderWorkspace
     magic_comments = Prism.parse(source).magic_comments.select do |comment|
       first_code_line.nil? || comment.key_loc.start_line < first_code_line
     end
-    frozen = magic_comments
-      .select { |comment| comment.key.downcase.tr("-", "_") == "frozen_string_literal" }
-      .last
-      &.value
-      &.downcase
-    if frozen == "false"
-      abort "error: frozen_string_literal: false cannot be bundled: #{source_label(path)}"
+    frozen_comments = magic_comments.select do |comment|
+      comment.key.downcase.tr("-", "_") == "frozen_string_literal"
     end
-    if frozen != "true"
-      abort "error: source must declare frozen_string_literal: true: #{source_label(path)}"
+    frozen_values = frozen_comments.map { |comment| comment.value.downcase }
+    if frozen_values.any? { |value| !%w[true false].include?(value) }
+      abort "error: frozen_string_literal must be true, false, or omitted: #{source_label(path)}"
+    end
+    if frozen_values.uniq.length > 1
+      abort "error: conflicting frozen_string_literal values cannot be bundled: #{source_label(path)}"
     end
 
     encodings = magic_comments
@@ -841,8 +863,31 @@ class AtCoderWorkspace
 
       abort "error: only UTF-8 source files can be bundled: #{source_label(path)}"
     end
+
+    frozen_string_literal = case frozen_values.first
+    when "true" then true
+    when "false" then false
+    end
+    [
+      frozen_string_literal,
+      frozen_comments.map { |comment| comment.key_loc.start_line }.uniq
+    ]
   rescue ArgumentError
     abort "error: unknown source encoding cannot be bundled: #{source_label(path)}"
+  end
+
+  def strip_magic_comment_lines(source, line_numbers)
+    source.lines.map.with_index(1) do |line, line_number|
+      next line unless line_numbers.include?(line_number)
+
+      if line.end_with?("\r\n")
+        "\r\n"
+      elsif line.end_with?("\n")
+        "\n"
+      else
+        ""
+      end
+    end.join
   end
 
   def validate_library_source!(source, path)
