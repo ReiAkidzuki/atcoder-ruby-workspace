@@ -1,35 +1,37 @@
 # AtCoder Ruby workspace
 
-AtCoder の現行 CRuby 環境に合わせた、Ruby 3.4.5 用の作業環境です。
-解答本体と自作ライブラリを分けて管理し、実行時と提出時には単一の Ruby ファイルへ合成します。
+**English** | [日本語](README.ja.md)
 
-## GitHub から使い始める
+A workspace targeting AtCoder's Ruby 3.4.5 (CRuby) environment.
+It keeps solutions and custom libraries separate, then bundles them into a single Ruby file for local runs and submissions.
 
-新しい解答リポジトリを作る場合は、GitHub の「Use this template」から「Create a new repository」を選択します。
-テンプレートから作ったリポジトリには独立した履歴が作られるため、元リポジトリへ変更を戻す用途の fork は必要ありません。
+## Start from GitHub
 
-同じ解答と自作ライブラリを複数の端末で共有する場合は、テンプレートからリポジトリを一度だけ作り、その同じリポジトリを各端末へ clone します。
-Cookie はリポジトリへ保存されないため、提出に使う端末ごとに `make login` を実行してください。
+To create a new solution repository, select **Use this template** and then **Create a new repository** on GitHub.
+A repository created from this template has an independent history, so you do not need to fork the original repository.
 
-## 導入
+To share the same solutions and custom libraries across multiple machines, create one repository from the template and clone that same repository on each machine.
+Cookies are not stored in the repository, so run `make login` on every machine used for submissions.
 
-この環境は macOS と Linux に対応しています。
-Windows では WSL を使用してください。
+## Installation
 
-事前に [rbenv](https://github.com/rbenv/rbenv)、[ruby-build](https://github.com/rbenv/ruby-build)、[uv](https://docs.astral.sh/uv/getting-started/installation/) をインストールします。
-macOS では Homebrew を使って次のように導入できます。
+This workspace supports macOS and Linux.
+On Windows, use WSL.
+
+Install [rbenv](https://github.com/rbenv/rbenv), [ruby-build](https://github.com/rbenv/ruby-build), and [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
+On macOS, you can install them with Homebrew:
 
 ```sh
 brew install rbenv ruby-build uv
 rbenv init
 ```
 
-`rbenv init` の実行後は、表示に従ってターミナルを開き直します。
+After running `rbenv init`, follow its instructions and restart your terminal.
 
-Linux では [ruby-build が案内するビルド環境](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment)を準備し、GNU time の `time` パッケージもインストールしてください。
-その後、rbenv と uv の公式手順に従って導入し、`rbenv init` を実行します。
+On Linux, install the [build environment recommended by ruby-build](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment) and the `time` package that provides GNU time.
+Then install rbenv and uv according to their official instructions, and run `rbenv init`.
 
-リポジトリを clone したら、次のコマンドを実行します。
+After cloning the repository, run:
 
 ```sh
 make setup
@@ -37,40 +39,42 @@ make doctor
 make self-test
 ```
 
-`make setup` は Ruby 3.4.5、online-judge-tools (`oj`)、AtCoder のログイン補助 (`aclogin`) をインストールします。
-macOS で GNU time が不足している場合は、Homebrew から併せてインストールします。
-`make doctor` がすべて `ok` なら、ローカル実行環境の準備は完了です。
-`make self-test` は、ネットワークへ接続せず、一時ディレクトリ内でこの作業環境自体の回帰テストを実行します。
+`make setup` installs Ruby 3.4.5, online-judge-tools (`oj`), and the AtCoder login helper (`aclogin`).
+On macOS, it also installs GNU time with Homebrew when necessary.
+When every item reported by `make doctor` is `ok`, the local environment is ready.
+`make self-test` runs the workspace's regression tests in a temporary directory without making network requests.
 
-## 提出前の初回ログイン
+## First-time login for submissions
 
-AtCoder は CAPTCHA を導入しているため、CLI だけでは自動ログインできません。
-ブラウザで AtCoder にログインし、開発者ツールから `REVEL_SESSION` Cookie の値をコピーしてから、次を実行してください。
+Because AtCoder uses CAPTCHA, the CLI cannot complete an automated login on its own.
+Log in to AtCoder in a browser, copy the value of the `REVEL_SESSION` cookie from the browser's developer tools, and then run:
 
 ```sh
 make login
 ```
 
-表示されたプロンプトへ Cookie の値を貼り付けます。
-Cookie は `oj` のユーザーデータ領域へ保存され、このリポジトリには保存されません。
-Cookie の値をソースコード、コミット、チャットへ貼らないでください。
-タスク一覧、問題作成、サンプル取得、ローカルテストにはログイン不要で、ログイン情報を使うのは提出時だけです。
+Paste the cookie value into the prompt.
+The cookie is stored in `oj`'s user data directory and is never stored in this repository.
+Do not paste the cookie value into source code, commits, or chats.
+Normally, only submissions require login.
+Public task listings, problem scaffolding, sample downloads, and local tests usually work without it.
+If sample download is rejected because authentication is required, run `make login`.
 
-## 使い方
+## Usage
 
-コンテストのタスク一覧を表示できます。
+List all tasks in a contest:
 
 ```sh
 bin/atcoder tasks abc468
 ```
 
-全問題の `main.rb` とサンプルを一括作成します。
+Create `main.rb` files and download samples for every task in a contest:
 
 ```sh
 bin/atcoder contest abc468
 ```
 
-生成される構成は次のとおりです。
+The generated layout looks like this:
 
 ```text
 abc468/
@@ -86,18 +90,19 @@ abc468/
 └── ...
 ```
 
-`.samples-complete` はサンプル取得の完了確認に使う自動管理ファイルです。
-編集や削除は不要です。
+`.samples-complete` is an automatically managed marker that records successful sample retrieval.
+You do not need to edit or delete it.
 
-1問だけ作成する場合は、問題 URL、またはコンテスト ID と問題ラベルを指定します。
+To create only one task, provide either its problem URL or a contest ID and task label:
 
 ```sh
 bin/atcoder new abc468 a
-# 古いコンテストなど、問題 ID が通常と異なる場合は URL を指定
+# Use a URL for older contests or tasks with nonstandard problem IDs.
 bin/atcoder new https://atcoder.jp/contests/abc001/tasks/abc001_1
 ```
 
-解答を書いたら、AtCoder と同じ `ruby --jit` でサンプルを実行します。
+After writing a solution, use `test` for official samples and manual cases, or `run` for manual execution.
+Both commands use the same `ruby --jit` command as AtCoder:
 
 ```sh
 bin/atcoder test abc468/a
@@ -105,12 +110,12 @@ bin/atcoder run abc468/a
 bin/atcoder run abc468/a input.txt
 ```
 
-## 自作ライブラリ
+## Custom libraries
 
-自作ライブラリは `library/` 以下へ `.rb` ファイルとして配置します。
-サブディレクトリも使用でき、`library/**/*.rb` を相対パスの辞書順ですべて解答へ合成します。
-編集中で合成対象から外したいファイルは、拡張子を `.rb.disabled` などへ変更してください。
-名前がドットで始まるファイルとディレクトリは合成対象外です。
+Place custom libraries under `library/` as `.rb` files.
+Subdirectories are supported, and all files matching `library/**/*.rb` are bundled in lexicographic order by relative path.
+To temporarily exclude a work-in-progress file, change its extension to something such as `.rb.disabled`.
+Files and directories whose names start with a dot are excluded.
 
 ```text
 library/
@@ -122,124 +127,126 @@ library/
     └── dijkstra.rb
 ```
 
-順序判定には、ファイル名だけでなく `library/` からの相対パス全体を使用します。
-ディレクトリをまたぐ依存順がある場合は、上の例のようにディレクトリ名にも数値接頭辞を付けてください。
-依存関係は自動解析しません。
-トップレベルの名前衝突を避けるため、ライブラリは固有の `module` または `class` 以下へ定義します。
-`library/` 配下では、拡張子にかかわらずシンボリックリンクを使用できません。
+Ordering uses the complete path relative to `library/`, not only the filename.
+When dependencies span directories, add numeric prefixes to directory names as shown above.
+Dependencies are not analyzed automatically.
+Define libraries under uniquely named `module` or `class` namespaces to avoid top-level name collisions.
+Symbolic links are not allowed anywhere under `library/`, regardless of their extension.
 
-`test`、`run`、`random`、`submit` は、最新のライブラリと対象の `main.rb` を一時ファイルへ毎回合成します。
-既存の `main.rb` は書き換えません。
-ランダムテストでは解答側だけへ合成し、生成器と正解器は独立したまま実行します。
-提出時は、サンプルテストを通した同一の一時ファイルを `oj` が送信します。
-新しい雛形の `main.rb` は、直接実行した場合もプロジェクト直下のライブラリを読み込みます。
-以前に作成した `main.rb` を `ruby` で直接実行するとライブラリを読み込まないため、`bin/atcoder run` を使用してください。
+The `test`, `run`, `random`, and `submit` commands bundle the latest libraries with the target `main.rb` into a temporary file every time they run.
+They do not modify the existing `main.rb`.
+During random testing, libraries are bundled only with the solution; the generator and oracle remain independent.
+For submission, `oj` sends the exact temporary file that passed all local tests, including official samples and manual cases.
+A newly generated `main.rb` also loads libraries from the project root when run directly.
+A `main.rb` not based on the current template may not load libraries when invoked directly with `ruby`; `bin/atcoder run` always creates the bundle first.
 
-ライブラリ内では標準ライブラリ用の `require "set"` などを使用できます。
-`require_relative` は `main.rb` とライブラリのどちらでも、単一ファイル化後の意味が変わるため合成時にエラーとして拒否します。
-ライブラリ内の `__END__` と `DATA` も使用できません。
-`main.rb` と各ライブラリは UTF-8 で保存し、実行コードより前に `# frozen_string_literal: true` を記述してください。
-通常はファイルの先頭行へ記述します。
-合成後は解答全体で frozen string literal が有効になります。
-`__FILE__` と `__dir__` は合成後のファイルを指すため、ライブラリから外部ファイルを参照する実装は避けてください。
-`if __FILE__ == $PROGRAM_NAME` で囲んだ自己テストも合成後には実行されるため、ライブラリ内へ配置しないでください。
+Libraries may load standard-library files, for example with `require "set"`.
+`require_relative` is rejected during bundling in both `main.rb` and library files because its meaning changes after files are combined.
+`__END__` and `DATA` are also unavailable in library files.
+Save `main.rb` and every library as UTF-8, and place `# frozen_string_literal: true` before executable code.
+Normally, put it on the first line.
+Frozen string literals are enabled for the complete bundled solution.
+Because `__FILE__` and `__dir__` refer to the bundled file, avoid library implementations that access external files.
+Self-tests guarded by `if __FILE__ == $PROGRAM_NAME` also run after bundling, so do not place them in library files.
 
-`make doctor` は、ライブラリの構文と上記の合成規則も検査します。
-エラーの詳細だけを確認する場合は `bin/atcoder check-library` を実行してください。
+`make doctor` checks library syntax and all bundling rules described above.
+To inspect only library-related errors, run `bin/atcoder check-library`.
 
-手動提出用の単一ファイルは、次のコマンドで `abc468/a/submission.rb` へ生成できます。
+To generate a single file for manual submission at `abc468/a/submission.rb`, run:
 
 ```sh
 bin/atcoder bundle abc468/a
-# または
+# or
 make bundle TARGET=abc468/a
 ```
 
-`submission.rb` は Git の追跡対象外です。
-再実行時は、このコマンドが生成した `submission.rb` だけを更新します。
-同名の手書きファイルがある場合は、上書きせずエラーで停止します。
-生成済みの `submission.rb` へ直接加えた変更は、次回の `bundle` で失われます。
-修正は `main.rb` または `library/` へ加えてください。
+`submission.rb` is excluded from Git tracking.
+Running the command again updates only a `submission.rb` previously generated by this command.
+If a manually created file with the same name already exists, the command stops instead of overwriting it.
+Any direct edits to a generated `submission.rb` are lost the next time it is bundled.
+Make changes in `main.rb` or `library/` instead.
 
-配置規則の短い説明は `library/README.md` にも記載しています。
+A shorter summary of these layout rules is available in [library/README.md](library/README.md) (Japanese).
 
-## 手動テストケース
+## Manual test cases
 
-手元の入力ファイルと期待出力ファイルを、通常のテスト対象へ追加できます。
-`INPUT` と `EXPECTED` には、現在のディレクトリを基準とした既存ファイルのパスを指定します。
+You can add local input and expected-output files to the regular test suite.
+`INPUT` and `EXPECTED` must point to existing files.
+Relative paths are resolved from the current directory, and absolute paths are also accepted.
 
 ```sh
 bin/atcoder add-case abc468/a custom-1 input.txt expected.txt
 ```
 
-この例では、`abc468/a/test/custom-1.in` と `custom-1.out` を作成します。
-`NAME` は64文字以内とし、先頭には英小文字か数字、それ以降には英小文字、数字、`_`、`-` を使用できます。
-公式サンプル用の `sample-<番号>` は指定できません。
-既存ファイルは上書きしないため、同じ名前を追加する場合は先に別の名前を選んでください。
-公式サンプルの管理ファイル `.samples-complete` は変更しません。
+This example creates `abc468/a/test/custom-1.in` and `custom-1.out`.
+`NAME` may contain up to 64 characters.
+It must start with a lowercase ASCII letter or digit, and the remaining characters may also include `_` and `-`.
+Names in the reserved `sample-<number>` format are not allowed.
+Existing files are never overwritten, so choose a different name if the case already exists.
+The `.samples-complete` marker for official samples is not modified.
 
-対になる `test/<名前>.in` と `test/<名前>.out` を直接置く方法も利用できます。
-`bin/atcoder test` は、公式サンプルと手動ケースをまとめて実行します。
+You may also directly place matching `test/<name>.in` and `test/<name>.out` files.
+`bin/atcoder test` runs both official samples and manually added cases.
 
-Make から追加する場合は、次のように指定します。
+To add a case through Make, run:
 
 ```sh
 make add-case TARGET=abc468/a NAME=custom-1 INPUT=input.txt EXPECTED=expected.txt
 ```
 
-## ランダムテスト
+## Random testing
 
-ランダムテストは、同じ入力に対する正解器の出力と `main.rb` の出力を比較します。
-最初に問題ごとの生成器と正解器を作成します。
+Random testing compares the oracle's output with the output from `main.rb` for the same generated input.
+First, create a generator and oracle for the target problem:
 
 ```sh
 bin/atcoder init-random abc468/a
 ```
 
-このコマンドは、次の二つの雛形を作成します。
-再実行しても、編集済みのファイルは上書きしません。
+This command creates the following two templates.
+Running it again does not overwrite files you have edited.
 
-- `random/generator.rb`：第1引数で seed を受け取り、生成した入力を標準出力へ書く
-- `random/oracle.rb`：生成した入力を標準入力から読み、期待する出力を標準出力へ書く
+- `random/generator.rb`: accepts a seed as its first argument and writes generated input to standard output
+- `random/oracle.rb`: reads generated input from standard input and writes the expected output to standard output
 
-雛形は未実装のまま終了ステータス `1` を返します。
-コメントに沿って両方を実装してから、ランダムテストを実行してください。
+The templates are intentionally incomplete and exit with status `1`.
+Implement both files according to their comments before running random tests.
 
 ```sh
-# seed 1 から 1000 件を実行
+# Run 1,000 cases starting at seed 1.
 bin/atcoder random abc468/a 1000 1
 
-# 省略時は seed 1 から 100 件
+# Defaults to 100 cases starting at seed 1.
 bin/atcoder random abc468/a
 ```
 
-同じ操作は Make からも実行できます。
+The same operations are available through Make:
 
 ```sh
 make init-random TARGET=abc468/a
 make random TARGET=abc468/a COUNT=1000 SEED=1
 ```
 
-不一致や `main.rb` の異常終了が発生すると、入力、期待出力、実際の出力、seed、標準エラーがあればその内容を `random/failures/` 以下へ保存します。
-表示された `bin/atcoder random <TARGET> 1 <SEED>` を実行すれば、同じ seed で再現できます。
-正解器の結果を確認した後、表示された `add-case` コマンドで通常の回帰テストへ昇格できます。
-生成した失敗データは Git の追跡対象外です。
+When an output mismatch or abnormal termination of `main.rb` occurs, the command saves the input, expected output, actual output, seed, and any standard error output under `random/failures/`.
+Run the displayed `bin/atcoder random <TARGET> 1 <SEED>` command to reproduce the failure with the same seed.
+After verifying the oracle's result, use the displayed `add-case` command to promote the failure to the regular regression suite.
+Generated failure data is excluded from Git tracking.
 
-各プロセスの制限時間は既定で 10 秒、出力上限は標準出力と標準エラーのそれぞれで 16 MiB です。
-制限時間は `ATCODER_RANDOM_TIMEOUT=3 bin/atcoder random ...` のように秒数を変更できます。
-生成器または正解器が異常終了した場合は、解答の誤りと区別するため終了ステータス `2` で停止します。
+Each process has a default timeout of 10 seconds and separate 16 MiB limits for standard output and standard error.
+Change the timeout in seconds with a command such as `ATCODER_RANDOM_TIMEOUT=3 bin/atcoder random ...`.
+If the generator or oracle terminates abnormally, the command exits with status `2` to distinguish infrastructure errors from solution failures.
 
-比較は CRLF と LF の違いだけを吸収し、それ以外は完全一致として扱います。
-浮動小数点の誤差、複数の正解、出力専用問題、特殊ジャッジがある問題には、この完全一致比較をそのまま適用できません。
+Comparison normalizes only CRLF to LF; all other content must match exactly.
+This exact comparison is not directly suitable for floating-point tolerances, multiple valid answers, output-only tasks, or problems with special judges.
 
-提出時にも自動でサンプルテストが再実行されます。
-テストが成功した場合だけ、Ruby 3.4.5（言語 ID `6087`）として提出確認へ進みます。
+The `submit` command reruns all local tests automatically, including official samples and manual cases.
+Only after they pass does it proceed to confirmation and submit as Ruby 3.4.5 (language ID `6087`).
 
 ```sh
 bin/atcoder submit abc468/a
 ```
 
-同じ操作は Make からも実行できます。
+The same operations are available through Make:
 
 ```sh
 make tasks CONTEST=abc468
@@ -255,28 +262,32 @@ make random TARGET=abc468/a COUNT=1000 SEED=1
 make submit TARGET=abc468/a
 ```
 
-`atcoder-cli` (`acc`) は使っていませんが、上の `tasks` と `contest` がタスク一覧表示と全問題一括作成を担当します。
-CLI はこのリポジトリ内で完結し、Ruby テンプレートのグローバル設定を必要としません。
+This workspace does not use `atcoder-cli` (`acc`).
+The `tasks` and `contest` commands provide task listing and bulk creation of all contest problems without requiring global Ruby template configuration.
 
-## 作業環境のセルフテスト
+## Workspace self-tests
 
-この作業環境を変更した後は、次のコマンドで回帰テストを実行できます。
+After modifying this workspace, run its regression tests with:
 
 ```sh
 make self-test
 ```
 
-テスト本体は `test/atcoder_workspace_test.rb` にあります。
-各テストは専用の一時ディレクトリと偽の `oj` を使うため、問題ファイルを変更せず、ログインやネットワーク接続も必要としません。
-ライブラリ順序、自動合成、手動 `bundle`、ランダムテスト、提出スナップショット、上書き保護、ソース検査、OS 別コマンド選択を確認します。
-GitHub Actions でも macOS と Ubuntu の両方で同じセルフテストを実行します。
+The self-tests live under `test/`.
+They use isolated temporary directories and fake external commands, so they do not modify problem files or require login or network access.
+The suite covers library ordering, automatic bundling, manual `bundle`, random testing, submission snapshots, overwrite protection, source validation, and OS-specific command selection.
+GitHub Actions runs the same self-tests on both macOS and Ubuntu.
 
-## AtCoder との差
+## Differences from AtCoder
 
-- Ruby は AtCoder と同じ 3.4.5 に固定しています。
-- 構文確認は `ruby -c`、サンプル実行は `ruby --jit` です。
-- AtCoder 本番とローカル環境では、実行時間やメモリ使用量が完全には一致しません。
-- 深い再帰を使う場合、必要に応じて問題のメモリ制限に合わせた `RUBY_THREAD_VM_STACK_SIZE` を設定してください。
-- AtCoder にない gem を使った解答は提出先で動きません。標準ライブラリ中心を推奨します。
+- Ruby is pinned to the same version used by AtCoder: 3.4.5.
+- Syntax is checked with `ruby -c`, and samples run with `ruby --jit`.
+- Local execution time and memory usage do not exactly match AtCoder's production environment.
+- For deep recursion, set `RUBY_THREAD_VM_STACK_SIZE` as necessary for the problem's memory limit.
+- Solutions that use gems unavailable on AtCoder will not run after submission. Prefer the standard library.
 
-現行言語環境の詳細は [AtCoder の使用可能言語・ライブラリ一覧](https://img.atcoder.jp/file/language-update/2025-10/language-list.html)を参照してください。
+See AtCoder's [available languages and libraries](https://img.atcoder.jp/file/language-update/2025-10/language-list.html) for details about the target language environment.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
