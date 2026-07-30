@@ -36,6 +36,7 @@ check "Random oracle template" "${ruby_command[@]}" -c template/random/oracle.rb
 check "Ruby JIT" "${ruby_command[@]}" --jit -e 'abort unless RubyVM::YJIT.enabled?'
 check "online-judge-tools" "$project_root/.venv/bin/oj" --version
 check "aclogin" "$project_root/.venv/bin/aclogin" --help
+check "AtCoder memory-limit parser" "$project_root/.venv/bin/python" -B test/onlinejudge_compat_test.py
 if gnu_time="$(atcoder_gnu_time_command)"; then
   check "GNU time" "$gnu_time" --version
 else

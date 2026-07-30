@@ -33,12 +33,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aclogin" },
+    { name = "online-judge-api-client" },
     { name = "online-judge-tools" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aclogin" },
+    { name = "online-judge-api-client", git = "https://github.com/online-judge-tools/api-client.git?rev=61ae95b945f00792bea96d80ff0659bf0a32cace" },
     { name = "online-judge-tools", git = "https://github.com/online-judge-tools/oj.git?rev=v12.0.0" },
 ]
 
@@ -339,7 +341,7 @@ wheels = [
 [[package]]
 name = "online-judge-api-client"
 version = "10.10.1"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/online-judge-tools/api-client.git?rev=61ae95b945f00792bea96d80ff0659bf0a32cace#61ae95b945f00792bea96d80ff0659bf0a32cace" }
 dependencies = [
     { name = "appdirs" },
     { name = "beautifulsoup4" },
@@ -347,10 +349,6 @@ dependencies = [
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "requests" },
-    { name = "toml" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/0d/7301a6d3ea54847c0874ec8025aa799f7b9db0c279459a1b1a6c847b34c2/online_judge_api_client-10.10.1-py3-none-any.whl", hash = "sha256:2e7bf210db2709ab41b85454c76f7901231ddb0990c52f5c01624a53a28a534d", size = 185968, upload-time = "2022-08-14T07:37:02.701Z" },
 ]
 
 [[package]]
@@ -661,15 +659,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d9/38/e12680bbe6b4f8f3d17adcaf38d26850aa756c85cf4a80e79fc12a018fe8/soupsieve-2.9.1.tar.gz", hash = "sha256:c33e6605bbc71dd628b00c632d58ae607c22bade247e52553928f83bbb75b4ba", size = 122261, upload-time = "2026-07-21T16:57:17.452Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0f/2c/437fe806897c2d6cfdc3ee43a18da8bf8e568530a4ae9bac781541ca9896/soupsieve-2.9.1-py3-none-any.whl", hash = "sha256:4f4477399246b7a0c720a88ca2454b11cd6bb9ae4c9d170140786e916776c14c", size = 37404, upload-time = "2026-07-21T16:57:16.421Z" },
-]
-
-[[package]]
-name = "toml"
-version = "0.10.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
 ]
 
 [[package]]

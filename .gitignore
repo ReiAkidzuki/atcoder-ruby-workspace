@@ -1,6 +1,8 @@
 .cache/
 .venv/
 .ruby-lsp/
+__pycache__/
+*.py[cod]
 
 # macOS / editors
 .DS_Store

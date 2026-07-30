@@ -276,12 +276,13 @@ make self-test
 The self-tests live under `test/`.
 They use isolated temporary directories and fake external commands, so they do not modify problem files or require login or network access.
 The suite covers library ordering, automatic bundling, manual `bundle`, random testing, submission snapshots, overwrite protection, source validation, login tool discovery, and OS-specific command selection.
-GitHub Actions runs the same self-tests on both macOS and Ubuntu.
+GitHub Actions runs the same self-tests and the installed AtCoder parser compatibility check on both macOS and Ubuntu.
 
 ## Differences from AtCoder
 
 - Ruby is pinned to the same version used by AtCoder: 3.4.5.
 - Syntax is checked with `ruby -c`, and samples run with `ruby --jit`.
+- The AtCoder API client is pinned to the exact commit from a [proposed upstream parser fix](https://github.com/online-judge-tools/api-client/pull/175) until a release supports `MiB` and `KiB` memory limits.
 - Local execution time and memory usage do not exactly match AtCoder's production environment.
 - For deep recursion, set `RUBY_THREAD_VM_STACK_SIZE` as necessary for the problem's memory limit.
 - Solutions that use gems unavailable on AtCoder will not run after submission. Prefer the standard library.
