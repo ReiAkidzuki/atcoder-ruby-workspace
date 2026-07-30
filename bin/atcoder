@@ -542,11 +542,15 @@ class AtCoderWorkspace
         abort "error: bundle syntax check failed"
       end
 
-      File.chmod(0o644, bundle_file)
-      File.rename(bundle_file, destination)
+      install_bundle_snapshot(bundle_file, destination)
       puts "Bundled: #{relative(destination)}"
       puts "Sources: #{library_files.length} library files + #{relative(main_file)}"
     end
+  end
+
+  def install_bundle_snapshot(bundle_file, destination)
+    File.chmod(0o644, bundle_file)
+    File.rename(bundle_file, destination)
   end
 
   def check_library
@@ -564,26 +568,123 @@ class AtCoderWorkspace
     ensure_inside_workspace!(url_file)
 
     url = url_file.read.strip
-    parse_problem_url(url)
+    contest_id, problem_id = parse_problem_url(url)
+    destination = directory.join(BUNDLE_FILENAME)
+    validate_bundle_destination!(destination)
 
     with_bundled_solution(main_file) do |bundle_file, library_files|
       unless test_bundled_solution(directory, main_file, bundle_file, library_files)
         abort "error: sample tests failed; submission cancelled"
       end
 
+      # AtCoder requires a browser-generated Turnstile token for the final POST.
+      install_bundle_snapshot(bundle_file, destination)
+      submit_url = browser_submission_url(contest_id, problem_id)
+
       puts
-      puts "Submitting #{relative(main_file)} with #{library_files.length} library files as Ruby 3.4.5..."
-      success = system(
-        @oj.to_s,
-        "submit",
-        "--language",
-        RUBY_LANGUAGE_ID,
-        url,
-        bundle_file.basename.to_s,
-        chdir: directory.to_s
-      )
-      exit(success ? 0 : 1)
+      puts "Prepared browser submission:"
+      puts "  File: #{relative(destination)}"
+      puts "  Sources: #{library_files.length} library files + #{relative(main_file)}"
+      puts "  Language: Ruby 3.4.5 (language ID #{RUBY_LANGUAGE_ID})"
+      puts "  URL: #{submit_url}"
+      puts
+
+      if copy_to_clipboard(destination)
+        puts "Copied the bundled source to the clipboard."
+      else
+        puts "Copy the contents of #{relative(destination)}, or upload that file."
+      end
+
+      if open_browser(submit_url)
+        puts "Opened the AtCoder submission page."
+      else
+        puts "Open the URL above in a browser."
+      end
+
+      puts "Confirm the task and language, complete the human verification, then submit."
     end
+  end
+
+  def browser_submission_url(contest_id, problem_id)
+    query = URI.encode_www_form("taskScreenName" => problem_id)
+    "https://#{ATCODER_HOST}/contests/#{contest_id}/submit?#{query}"
+  end
+
+  def copy_to_clipboard(path)
+    return false if ENV["ATCODER_NO_CLIPBOARD"] == "1"
+
+    command = clipboard_command
+    return false unless command
+
+    path.open("rb") do |source|
+      system(*command, in: source, out: File::NULL, err: File::NULL)
+    end
+  rescue SystemCallError, IOError
+    false
+  end
+
+  def clipboard_command
+    override = ENV["ATCODER_CLIPBOARD"]
+    return command_with_path(override) if override && !override.empty?
+
+    case RbConfig::CONFIG.fetch("host_os")
+    when /darwin/
+      command_with_path("pbcopy")
+    when /linux/
+      command_with_path("wl-copy") ||
+        command_with_path("xclip", "-selection", "clipboard") ||
+        command_with_path("xsel", "--clipboard", "--input")
+    when /mswin|mingw|cygwin/
+      command_with_path("clip.exe")
+    end
+  end
+
+  def open_browser(url)
+    return false if ENV["ATCODER_NO_BROWSER"] == "1"
+
+    command = browser_command(url)
+    return false unless command
+
+    system(*command, out: File::NULL, err: File::NULL)
+  rescue SystemCallError
+    false
+  end
+
+  def browser_command(url)
+    override = ENV["ATCODER_BROWSER"]
+    return command_with_path(override, url) if override && !override.empty?
+
+    case RbConfig::CONFIG.fetch("host_os")
+    when /darwin/
+      command_with_path("open", url)
+    when /linux/
+      command_with_path("xdg-open", url)
+    when /mswin|mingw|cygwin/
+      command_with_path("cmd.exe", "/c", "start", "", url)
+    end
+  end
+
+  def command_with_path(name, *arguments)
+    executable = find_executable(name)
+    [executable, *arguments] if executable
+  end
+
+  def find_executable(name)
+    separators = [File::SEPARATOR, File::ALT_SEPARATOR].compact
+    if separators.any? { |separator| name.include?(separator) }
+      return name if File.file?(name) && File.executable?(name)
+
+      return
+    end
+
+    ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |directory|
+      next if directory.empty?
+
+      candidate = File.join(directory, name)
+      return candidate if File.file?(candidate) && File.executable?(candidate)
+    end
+
+    nil
   end
 
   def problem_url(source, task)

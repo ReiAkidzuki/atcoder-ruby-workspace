@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -191,7 +192,7 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_empty temporary_bundles
   end
 
-  def test_submit_tests_and_uploads_the_same_temporary_snapshot
+  def test_submit_tests_and_prepares_the_same_snapshot_for_browser
     log = @sandbox.join("oj.log")
     install_fake_oj
     write_library("offset.rb", <<~RUBY)
@@ -211,21 +212,75 @@ class AtCoderWorkspaceTest < Minitest::Test
       "https://atcoder.jp/contests/abc999/tasks/abc999_a\n"
     )
 
-    _stdout, stderr, status = atcoder(
+    stdout, stderr, status = atcoder(
       "submit",
       "contest/a",
-      env: { "FAKE_OJ_LOG" => log.to_s }
+      env: {
+        "ATCODER_NO_BROWSER" => "1",
+        "ATCODER_NO_CLIPBOARD" => "1",
+        "FAKE_OJ_LOG" => log.to_s
+      }
     )
 
     assert_predicate status, :success?, stderr
     records = log.readlines(chomp: true).map { |line| JSON.parse(line) }
-    assert_equal %w[test submit], records.map { |record| record.fetch("action") }
-    assert_equal records.first.fetch("file"), records.last.fetch("file")
-    assert_equal records.first.fetch("sha256"), records.last.fetch("sha256")
-    assert_equal records.first.fetch("source"), records.last.fetch("source")
+    assert_equal %w[test], records.map { |record| record.fetch("action") }
+    submission = @problem.join("submission.rb")
+    assert_path_exists submission
+    assert_equal records.first.fetch("sha256"), Digest::SHA256.file(submission).hexdigest
+    assert_equal records.first.fetch("source"), submission.binread
     assert_includes records.first.fetch("source"), "SUBMIT_OFFSET = 4"
+    assert_includes stdout, "Prepared browser submission"
+    assert_includes stdout, "contest/a/submission.rb"
+    assert_includes stdout, "Ruby 3.4.5 (language ID 6087)"
+    assert_includes stdout, "https://atcoder.jp/contests/abc999/submit?taskScreenName=abc999_a"
     assert_empty temporary_bundles
-    refute_path_exists @problem.join("submission.rb")
+  end
+
+  def test_submit_copies_the_snapshot_and_opens_the_preselected_task
+    log = @sandbox.join("oj.log")
+    clipboard_log = @sandbox.join("clipboard.log")
+    browser_log = @sandbox.join("browser.log")
+    install_fake_oj
+    clipboard = install_fake_command("clipboard", <<~'RUBY')
+      File.binwrite(ENV.fetch("FAKE_CLIPBOARD_LOG"), $stdin.read)
+    RUBY
+    browser = install_fake_command("browser", <<~'RUBY')
+      File.write(ENV.fetch("FAKE_BROWSER_LOG"), "#{ARGV.join("\n")}\n")
+    RUBY
+    write_main(<<~RUBY)
+      # frozen_string_literal: true
+
+      puts Integer($stdin.read) * 2
+    RUBY
+    write_problem_file("test/sample-1.in", "4\n")
+    write_problem_file("test/sample-1.out", "8\n")
+    write_problem_file(
+      ".problem-url",
+      "https://atcoder.jp/contests/abc999/tasks/abc999_a\n"
+    )
+
+    stdout, stderr, status = atcoder(
+      "submit",
+      "contest/a",
+      env: {
+        "ATCODER_BROWSER" => browser.to_s,
+        "ATCODER_CLIPBOARD" => clipboard.to_s,
+        "FAKE_BROWSER_LOG" => browser_log.to_s,
+        "FAKE_CLIPBOARD_LOG" => clipboard_log.to_s,
+        "FAKE_OJ_LOG" => log.to_s
+      }
+    )
+
+    assert_predicate status, :success?, stderr
+    submission = @problem.join("submission.rb")
+    assert_equal submission.binread, clipboard_log.binread
+    assert_equal(
+      "https://atcoder.jp/contests/abc999/submit?taskScreenName=abc999_a\n",
+      browser_log.read
+    )
+    assert_includes stdout, "Copied the bundled source to the clipboard."
+    assert_includes stdout, "Opened the AtCoder submission page."
   end
 
   def test_bundle_replaces_its_own_generated_output
@@ -522,6 +577,19 @@ class AtCoderWorkspaceTest < Minitest::Test
       end
     RUBY
     path.chmod(0o755)
+  end
+
+  def install_fake_command(name, source)
+    path = @sandbox.join("fake-bin", name)
+    path.parent.mkpath
+    path.write(<<~RUBY)
+      #!#{RbConfig.ruby}
+      # frozen_string_literal: true
+
+      #{source}
+    RUBY
+    path.chmod(0o755)
+    path
   end
 
   def temporary_bundles
