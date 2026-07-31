@@ -14,6 +14,38 @@ module AtCoderProjectGemEnvironment
   module_function
 
   def activate!(script, arguments)
+    activation = pending_activation
+    return unless activation
+
+    ruby_arguments = []
+    if defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?
+      ruby_arguments << "--yjit"
+    end
+    exec(
+      activation.fetch(:environment),
+      RbConfig.ruby,
+      *ruby_arguments,
+      File.expand_path(script),
+      *arguments
+    )
+  end
+
+  def activate_in_process!
+    activation = pending_activation
+    return unless activation
+
+    activation.fetch(:environment).each do |name, value|
+      if value.nil?
+        ENV.delete(name)
+      else
+        ENV[name] = value
+      end
+    end
+    gem_home = activation.fetch(:gem_home)
+    Gem.use_paths(gem_home, [gem_home])
+  end
+
+  def pending_activation
     project_root = File.expand_path("..", __dir__)
     gemfile = File.join(project_root, "Gemfile")
     return unless File.file?(gemfile)
@@ -67,8 +99,9 @@ module AtCoderProjectGemEnvironment
       abort "error: Ruby gem environment is incomplete; run `#{setup_target}`"
     end
 
-    exec(
-      {
+    {
+      gem_home:,
+      environment: {
         ACTIVATION_MARKER => gem_home,
         "BUNDLE_APP_CONFIG" => nil,
         "BUNDLE_BIN_PATH" => nil,
@@ -85,11 +118,8 @@ module AtCoderProjectGemEnvironment
         "RUBYLIB" => nil,
         "RUBYOPT" => nil,
         "RUBYGEMS_GEMDEPS" => nil
-      },
-      RbConfig.ruby,
-      File.expand_path(script),
-      *arguments
-    )
+      }
+    }
   rescue ArgumentError => error
     abort "error: #{error.message}"
   rescue Gem::GemNotFoundException

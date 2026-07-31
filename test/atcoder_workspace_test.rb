@@ -227,6 +227,60 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_equal "core,extension\n", run_stdout
   end
 
+  def test_bundle_places_common_dependencies_before_a_lexically_earlier_consumer
+    common_dependencies =
+      PROJECT_ROOT.join("library/00_core/00_contest_dependencies.rb")
+    common_destination =
+      @sandbox.join("library/00_core/00_contest_dependencies.rb")
+    common_destination.parent.mkpath
+    FileUtils.cp(common_dependencies, common_destination)
+    write_library("00_core/00_a_consumer.rb", <<~RUBY)
+      common_dependencies_dsu = DSU.new(3)
+      common_dependencies_dsu.merge(0, 1)
+      COMMON_DEPENDENCIES_AT_LOAD = [
+        Set[1, 2, 2].size,
+        common_dependencies_dsu.size(0)
+      ]
+    RUBY
+    main_source = PROJECT_ROOT.join("template/main.rb").read.sub(
+      "  # 解答をここに書く",
+      "  puts COMMON_DEPENDENCIES_AT_LOAD.join(\":\")"
+    )
+    write_main(main_source)
+
+    _stdout, stderr, status = atcoder("bundle", "contest/a")
+
+    assert_predicate status, :success?, stderr
+    submission = @problem.join("submission.rb")
+    source = submission.read
+    common_marker =
+      '# --- begin "library/00_core/00_contest_dependencies.rb" ---'
+    consumer_marker =
+      '# --- begin "library/00_core/00_a_consumer.rb" ---'
+    assert_operator source.index(common_marker), :<, source.index(consumer_marker)
+    assert_includes source, 'require "ac-library-rb/dsu"'
+
+    fake_load_path = install_fake_common_dependencies(common_dependencies)
+    run_stdout, run_stderr, run_status = Open3.capture3(
+      { "RUBYLIB" => fake_load_path.to_s },
+      RbConfig.ruby,
+      submission.to_s,
+      chdir: submission.parent.to_s
+    )
+    assert_predicate run_status, :success?, run_stderr
+    assert_equal "2:2\n", run_stdout
+
+    FileUtils.cp(PROJECT_ROOT.join("library.rb"), @sandbox.join("library.rb"))
+    direct_stdout, direct_stderr, direct_status = Open3.capture3(
+      { "RUBYLIB" => fake_load_path.to_s },
+      RbConfig.ruby,
+      @problem.join("main.rb").to_s,
+      chdir: @problem.to_s
+    )
+    assert_predicate direct_status, :success?, direct_stderr
+    assert_equal "2:2\n", direct_stdout
+  end
+
   def test_run_uses_the_latest_library_without_rewriting_main
     write_library_value(3)
     write_main(<<~RUBY)
@@ -706,6 +760,58 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_equal "12\n", stdout
   end
 
+  def test_library_loader_can_be_required_from_ruby_e_with_project_gems
+    install_test_bundle
+    FileUtils.cp(PROJECT_ROOT.join("library.rb"), @sandbox.join("library.rb"))
+    write_library("probe.rb", <<~RUBY)
+      require "workspace_probe"
+    RUBY
+
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      "-I",
+      @sandbox.to_s,
+      "-rlibrary",
+      "-e",
+      "puts WorkspaceProbe::VALUE",
+      chdir: @sandbox.to_s
+    )
+
+    assert_predicate status, :success?, stderr
+    assert_equal "11\n", stdout
+  end
+
+  def test_direct_template_isolates_project_gems_and_keeps_yjit_enabled
+    install_test_bundle
+    FileUtils.cp(PROJECT_ROOT.join("library.rb"), @sandbox.join("library.rb"))
+    write_library("probe.rb", <<~RUBY)
+      require "workspace_probe"
+    RUBY
+    external_gem = @sandbox.join("external-lib/workspace_probe.rb")
+    external_gem.parent.mkpath
+    external_gem.write(<<~RUBY)
+      module WorkspaceProbe
+        VALUE = 99
+      end
+    RUBY
+    source = PROJECT_ROOT.join("template/main.rb").read.sub(
+      "  # 解答をここに書く",
+      "  puts [WorkspaceProbe::VALUE, RubyVM::YJIT.enabled?].join(\":\")"
+    )
+    write_main(source)
+
+    stdout, stderr, status = Open3.capture3(
+      { "RUBYLIB" => external_gem.parent.to_s },
+      RbConfig.ruby,
+      "--jit",
+      @problem.join("main.rb").to_s,
+      chdir: @problem.to_s
+    )
+
+    assert_predicate status, :success?, stderr
+    assert_equal "11:true\n", stdout
+  end
+
   private
 
   def write_main(source)
@@ -853,6 +959,66 @@ class AtCoderWorkspaceTest < Minitest::Test
     RUBY
     path.chmod(0o755)
     path
+  end
+
+  def install_fake_common_dependencies(common_dependencies)
+    load_path = @sandbox.join("fake-common-dependencies")
+    requires = common_dependencies.read.scan(/^require "([^"]+)"$/).flatten
+
+    requires.each do |feature|
+      next if %w[set prime].include?(feature)
+
+      path = load_path.join("#{feature}.rb")
+      path.parent.mkpath
+      source =
+        case feature
+        when "bit_utils"
+          "module BitUtils; end\n"
+        when "sorted_containers"
+          "module SortedContainers; end\n"
+        when "ac-library-rb/dsu"
+          <<~RUBY
+            module AcLibraryRb
+              class DSU
+                def initialize(size)
+                  @parent_or_size = Array.new(size, -1)
+                end
+
+                def merge(a, b)
+                  leader_a = leader(a)
+                  leader_b = leader(b)
+                  return leader_a if leader_a == leader_b
+
+                  if -@parent_or_size[leader_a] < -@parent_or_size[leader_b]
+                    leader_a, leader_b = leader_b, leader_a
+                  end
+                  @parent_or_size[leader_a] += @parent_or_size[leader_b]
+                  @parent_or_size[leader_b] = leader_a
+                  leader_a
+                end
+
+                def size(a)
+                  -@parent_or_size[leader(a)]
+                end
+
+                private
+
+                def leader(a)
+                  parent = @parent_or_size[a]
+                  return a if parent.negative?
+
+                  @parent_or_size[a] = leader(parent)
+                end
+              end
+            end
+          RUBY
+        else
+          "module AcLibraryRb; end\n"
+        end
+      path.write(source)
+    end
+
+    load_path
   end
 
   def temporary_bundles

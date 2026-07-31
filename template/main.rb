@@ -4,6 +4,7 @@ unless defined?(ATCODER_LIBRARY_LOADED)
 end
 
 def main
+  # Set, Prime, BitUtils, SortedContainers, AcLibraryRb は読込済み
   # 解答をここに書く
 end
 

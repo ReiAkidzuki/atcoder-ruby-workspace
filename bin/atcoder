@@ -33,6 +33,7 @@ class AtCoderWorkspace
   RANDOM_FILES = %w[generator.rb oracle.rb].freeze
   BUNDLE_FILENAME = "submission.rb"
   BUNDLE_MARKER = "# generated_by: bin/atcoder bundle"
+  COMMON_CONTEST_DEPENDENCIES = "00_core/00_contest_dependencies.rb"
   FROZEN_STRING_LITERAL = "# frozen_string_literal: true"
   RUBY_EOF_CONTROL_BYTES = [0x00, 0x04, 0x1A].freeze
   RIPPER_PREAMBLE_TOKENS = %i[
@@ -799,7 +800,7 @@ class AtCoderWorkspace
     bundled = +""
     bundled << "#{FROZEN_STRING_LITERAL}\n" if frozen_string_literal
     bundled << "#{BUNDLE_MARKER}\n"
-    bundled << "# Sources are ordered lexically: library/**/*.rb, then main.rb\n"
+    bundled << "# Sources: common contest dependencies first, then remaining libraries lexically, then main.rb\n"
     bundled << "ATCODER_LIBRARY_LOADED = true unless defined?(ATCODER_LIBRARY_LOADED)\n\n"
 
     library_fragments.each do |path, fragment|
@@ -832,7 +833,10 @@ class AtCoderWorkspace
     reject_symlinks_below!(@library_dir)
 
     Pathname.glob(@library_dir.join("**/*.rb").to_s)
-      .sort_by { |path| path.relative_path_from(@library_dir).to_s }
+      .sort_by do |path|
+        relative_path = path.relative_path_from(@library_dir).to_s
+        [relative_path == COMMON_CONTEST_DEPENDENCIES ? 0 : 1, relative_path]
+      end
       .map do |path|
         abort "error: library source must be a regular file: #{path}" unless path.file?
         ensure_inside_project!(path)

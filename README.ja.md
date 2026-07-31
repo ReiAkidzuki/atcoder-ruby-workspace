@@ -301,21 +301,23 @@ bin/atcoder run abc468/a input.txt
 ## 自作ライブラリ
 
 自作ライブラリは `library/` 以下へ `.rb` ファイルとして配置します。
-サブディレクトリも使用でき、`library/**/*.rb` を相対パスの辞書順ですべて解答へ合成します。
+サブディレクトリも使用できます。
+`library/00_core/00_contest_dependencies.rb` は必ず最初に合成し、それ以外の `library/**/*.rb` は相対パスの辞書順で解答へ合成します。
 編集中で合成対象から外したいファイルは、拡張子を `.rb.disabled` などへ変更してください。
 名前がドットで始まるファイルとディレクトリは合成対象外です。
 
 ```text
 library/
 ├── 00_core/
-│   └── union_find.rb
+│   ├── 00_contest_dependencies.rb
+│   └── input.rb
 ├── 10_data_structure/
 │   └── fenwick_tree.rb
 └── 20_graph/
     └── dijkstra.rb
 ```
 
-順序判定には、ファイル名だけでなく `library/` からの相対パス全体を使用します。
+上記の共通依存ファイルを除き、順序判定にはファイル名だけでなく `library/` からの相対パス全体を使用します。
 ディレクトリをまたぐ依存順がある場合は、上の例のようにディレクトリ名にも数値接頭辞を付けてください。
 依存関係は自動解析しません。
 トップレベルの名前衝突を避けるため、ライブラリは固有の `module` または `class` 以下へ定義します。
@@ -328,6 +330,25 @@ library/
 新しい雛形の `main.rb` は、直接実行した場合もプロジェクト直下のライブラリを読み込みます。
 現在の雛形を基にしていない `main.rb` は、`ruby` で直接実行するとライブラリを読み込まない場合があります。
 `bin/atcoder run` は実行前に必ず合成します。
+
+### ABC・ARC・AGC向けの共通依存
+
+`library/00_core/00_contest_dependencies.rb` は、解答本体とほかの自作ライブラリより先に合成されます。
+新しい `main.rb` では、次の機能を追加の `require` なしで使用できます。
+
+- Ruby標準の `Set` と `Prime`
+- ビット操作の `BitUtils`
+- 順序付きコンテナの `SortedContainers`
+- `ac-library-rb` 1.2.0からこのpreludeが選んだ、DSU、Deque、Priority Queue、Fenwick Tree、Segment Tree、Lazy Segment Tree、ModInt、畳み込み、フロー、SCC、2-SAT、文字列アルゴリズムなど
+
+`AcLibraryRb` はトップレベルへ `include` しているため、`AcLibraryRb::DSU` と `DSU` のどちらでも参照できます。
+これらはすべて通常の `make setup` で導入済みで、追加セットアップは不要です。
+直接 `ruby abc468/a/main.rb` を実行した場合も、`library.rb` がこのworkspaceの隔離されたgem環境を有効にしてから共通依存を読み込みます。
+`core_ext/all` や `core_ext/integer` などの任意の便利拡張は読み込まないため、必要な場合だけ明示的に `require` してください。
+
+用途が限定される `rgl`、`immutable-ruby`、`faster_prime` などは必要な解答または自作ライブラリで明示的に `require` してください。
+数値計算・最適化・機械学習系のオプションgemは既定では読み込まず、使用する場合だけ先に `make setup-full` を実行します。
+ランダムテストのgeneratorとoracleも起動を軽く保つため、この共通依存を自動では読み込みません。
 
 ライブラリ内では標準ライブラリ用の `require "set"` などを使用できます。
 `require_relative` は `main.rb` とライブラリのどちらでも、単一ファイル化後の意味が変わるため合成時にエラーとして拒否します。

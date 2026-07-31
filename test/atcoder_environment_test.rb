@@ -28,6 +28,33 @@ class AtCoderEnvironmentTest < Minitest::Test
   DOCTOR = PROJECT_ROOT.join("bin/doctor")
   GEM_CHECKER = PROJECT_ROOT.join("bin/check-atcoder-gems")
   GEM_SMOKE_TEST = PROJECT_ROOT.join("bin/smoke-atcoder-gems")
+  COMMON_DEPENDENCIES =
+    PROJECT_ROOT.join("library/00_core/00_contest_dependencies.rb")
+  COMMON_DEPENDENCY_REQUIRES = %w[
+    set
+    prime
+    bit_utils
+    sorted_containers
+    ac-library-rb/convolution
+    ac-library-rb/crt
+    ac-library-rb/deque
+    ac-library-rb/dsu
+    ac-library-rb/fenwick_tree
+    ac-library-rb/floor_sum
+    ac-library-rb/inv_mod
+    ac-library-rb/lazy_segtree
+    ac-library-rb/lcp_array
+    ac-library-rb/max_flow
+    ac-library-rb/min_cost_flow
+    ac-library-rb/modint
+    ac-library-rb/pow_mod
+    ac-library-rb/priority_queue
+    ac-library-rb/scc
+    ac-library-rb/segtree
+    ac-library-rb/suffix_array
+    ac-library-rb/two_sat
+    ac-library-rb/z_algorithm
+  ].freeze
   PROJECT_GEM_ENVIRONMENT = PROJECT_ROOT.join("bin/project_gem_environment.rb")
   ENVIRONMENT_SMOKE_WORKFLOW =
     PROJECT_ROOT.join(".github/workflows/environment-smoke.yml")
@@ -169,6 +196,28 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_equal EXPECTED_RUBY_VERSION, RUBY_VERSION
     assert_equal EXPECTED_RUBYGEMS_VERSION, Gem::VERSION
     assert_equal EXPECTED_BUNDLER_VERSION, Bundler::VERSION
+  end
+
+  def test_common_contest_dependencies_are_loaded_before_custom_libraries
+    assert_predicate COMMON_DEPENDENCIES, :file?
+
+    source = COMMON_DEPENDENCIES.read
+    requires = source.scan(/^require "([^"]+)"$/).flatten
+
+    assert_equal COMMON_DEPENDENCY_REQUIRES, requires
+    assert_includes source, "include AcLibraryRb"
+    refute_match(
+      /require "(?:ffi-geos|gsl|lightgbm|numo|or-tools|polars|rumale|torch|z3)/,
+      source
+    )
+  end
+
+  def test_setup_smoke_loads_the_common_contest_dependencies
+    source = GEM_SMOKE_TEST.read
+
+    assert_includes source,
+      'COMMON_CONTEST_DEPENDENCIES = File.expand_path('
+    assert_includes source, "require COMMON_CONTEST_DEPENDENCIES"
   end
 
   def test_gemfile_splits_atcoder_direct_gems_into_core_and_optional_groups

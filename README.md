@@ -302,21 +302,23 @@ bin/atcoder run abc468/a input.txt
 ## Custom libraries
 
 Place custom libraries under `library/` as `.rb` files.
-Subdirectories are supported, and all files matching `library/**/*.rb` are bundled in lexicographic order by relative path.
+Subdirectories are supported.
+`library/00_core/00_contest_dependencies.rb` is always bundled first; the remaining files matching `library/**/*.rb` are bundled in lexicographic order by relative path.
 To temporarily exclude a work-in-progress file, change its extension to something such as `.rb.disabled`.
 Files and directories whose names start with a dot are excluded.
 
 ```text
 library/
 ├── 00_core/
-│   └── union_find.rb
+│   ├── 00_contest_dependencies.rb
+│   └── input.rb
 ├── 10_data_structure/
 │   └── fenwick_tree.rb
 └── 20_graph/
     └── dijkstra.rb
 ```
 
-Ordering uses the complete path relative to `library/`, not only the filename.
+Except for the common-dependency file above, ordering uses the complete path relative to `library/`, not only the filename.
 When dependencies span directories, add numeric prefixes to directory names as shown above.
 Dependencies are not analyzed automatically.
 Define libraries under uniquely named `module` or `class` namespaces to avoid top-level name collisions.
@@ -328,6 +330,25 @@ During random testing, libraries are bundled only with the solution; the generat
 For submission, the exact file that passed all local tests is saved as `submission.rb` and handed to the browser.
 A newly generated `main.rb` also loads libraries from the project root when run directly.
 A `main.rb` not based on the current template may not load libraries when invoked directly with `ruby`; `bin/atcoder run` always creates the bundle first.
+
+### Common dependencies for ABCs, ARCs, and AGCs
+
+`library/00_core/00_contest_dependencies.rb` is bundled before the solution and every other custom library.
+New `main.rb` files can therefore use the following without adding more `require` statements:
+
+- Ruby's `Set` and `Prime`
+- `BitUtils` for bit operations
+- `SortedContainers` for ordered containers
+- the algorithm modules selected in the prelude from `ac-library-rb` 1.2.0, including DSU, Deque, priority queues, Fenwick trees, segment trees, lazy segment trees, ModInt, convolution, flows, SCC, 2-SAT, and string algorithms
+
+`AcLibraryRb` is included at the top level, so both `AcLibraryRb::DSU` and `DSU` work.
+The regular `make setup` already installs all of these dependencies; no additional setup is required.
+Direct `ruby abc468/a/main.rb` execution also works because `library.rb` activates this workspace's isolated gem environment before loading the common dependencies.
+Optional `ac-library-rb` convenience extensions such as `core_ext/all` and `core_ext/integer` are not loaded; require one explicitly when needed.
+
+More specialized core gems such as `rgl`, `immutable-ruby`, and `faster_prime` remain opt-in through an explicit `require` in the solution or a custom library.
+Optional numerical, optimization, and machine-learning gems are not loaded by default; run `make setup-full` before using one.
+Random-test generators and oracles also stay independent of this prelude to keep their startup lightweight.
 
 Libraries may load standard-library files, for example with `require "set"`.
 `require_relative` is rejected during bundling in both `main.rb` and library files because its meaning changes after files are combined.
