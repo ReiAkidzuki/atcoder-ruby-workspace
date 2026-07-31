@@ -35,6 +35,7 @@ class ContestGuardTest < Minitest::Test
 
   def setup
     @root = Pathname(Dir.mktmpdir("atcoder-contest-guard-"))
+    @global_marker = @root.join("device-state/contest-lock")
   end
 
   def teardown
@@ -89,6 +90,54 @@ class ContestGuardTest < Minitest::Test
     assert second.success?
     refute second.changed?
     assert_equal bytes, marker.binread
+  end
+
+  def test_device_lock_blocks_a_second_workspace_without_fetching
+    first_root = @root.join("ruby")
+    second_root = @root.join("crystal")
+    first_root.mkpath
+    second_root.mkpath
+    fetcher = FakeFetcher.new(body: FIXTURE, server_time: CLEAR_AFTER)
+    ruby_guard = build_guard(root: first_root)
+    crystal_guard = build_guard(root: second_root, fetcher:)
+
+    lock = ruby_guard.lock("abc469")
+    decision = crystal_guard.check("abc469")
+
+    assert lock.success?
+    assert first_root.join(".atcoder-contest-lock").file?
+    assert @global_marker.file?
+    refute decision.allowed?
+    assert_equal :locked, decision.state
+    assert_empty fetcher.uris
+
+    status = crystal_guard.status
+    refute status.allowed?
+    assert_equal :locked, status.state
+    assert_includes status.message, "device"
+
+    assert ruby_guard.unlock.success?
+    refute first_root.join(".atcoder-contest-lock").exist?
+    refute @global_marker.exist?
+  end
+
+  def test_corrupt_device_marker_fails_closed_and_cannot_be_unlocked
+    @global_marker.parent.mkpath
+    target = @root.join("outside-device-lock")
+    target.write("keep")
+    @global_marker.make_symlink(target)
+    fetcher = FakeFetcher.new(body: FIXTURE, server_time: CLEAR_AFTER)
+    guard = build_guard(fetcher:)
+
+    decision = guard.check("abc469")
+    unlock = guard.unlock
+
+    refute decision.allowed?
+    assert_equal :locked, decision.state
+    assert_empty fetcher.uris
+    refute unlock.success?
+    assert @global_marker.symlink?
+    assert_equal "keep", target.read
   end
 
   def test_corrupt_and_non_regular_markers_fail_closed
@@ -393,6 +442,12 @@ class ContestGuardTest < Minitest::Test
       stdout:,
       stderr:
     )
+    lock_status = AtCoderContestGuardCLI.run(
+      %w[status],
+      guard: clear_guard,
+      stdout:,
+      stderr:
+    )
 
     assert_equal 0, clear_status
     assert_includes stdout.string, "CLEAR"
@@ -400,6 +455,8 @@ class ContestGuardTest < Minitest::Test
     assert_equal 1, indeterminate_status
     assert_includes stderr.string, "BLOCKED"
     assert_equal 2, usage_status
+    assert_equal 0, lock_status
+    assert_includes stdout.string, "no manual repository or device AI lock"
   end
 
   def test_http_fetcher_uses_atcoder_server_time_and_no_cache_requests
@@ -483,9 +540,13 @@ class ContestGuardTest < Minitest::Test
     end
   end
 
-  def build_guard(fetcher: FakeFetcher.new(body: FIXTURE, server_time: CLEAR_AFTER))
+  def build_guard(
+    root: @root,
+    fetcher: FakeFetcher.new(body: FIXTURE, server_time: CLEAR_AFTER)
+  )
     AtCoderContestGuard.new(
-      root: @root,
+      root:,
+      global_marker: @global_marker,
       fetcher:,
       clock: -> { Time.iso8601("2026-07-31T09:00:00+09:00") }
     )

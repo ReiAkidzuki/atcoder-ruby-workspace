@@ -5,6 +5,7 @@ require "json"
 require "net/http"
 require "pathname"
 require "date"
+require "fileutils"
 require "time"
 require "uri"
 
@@ -167,25 +168,55 @@ class AtCoderContestGuard
     end
   end
 
-  def initialize(root:, fetcher: HttpFetcher.new, clock: -> { Time.now })
+  def self.default_global_marker(environment = ENV)
+    override = environment["ATCODER_GLOBAL_LOCK_FILE"]
+    if override && !override.empty?
+      marker = Pathname(override).expand_path
+      raise GuardError, "ATCODER_GLOBAL_LOCK_FILE must be an absolute path" unless Pathname(override).absolute?
+
+      return marker
+    end
+
+    state_home = environment["XDG_STATE_HOME"]
+    if state_home && !state_home.empty?
+      state_path = Pathname(state_home)
+      raise GuardError, "XDG_STATE_HOME must be an absolute path" unless state_path.absolute?
+
+      return state_path.join("atcoder-workspace/contest-lock")
+    end
+
+    home = environment["HOME"]
+    home_path = home && !home.empty? ? Pathname(home) : Pathname(Dir.home)
+    raise GuardError, "HOME must resolve to an absolute path" unless home_path.absolute?
+
+    home_path.join(".local/state/atcoder-workspace/contest-lock")
+  end
+
+  def initialize(
+    root:,
+    global_marker: self.class.default_global_marker,
+    fetcher: HttpFetcher.new,
+    clock: -> { Time.now }
+  )
     @root = Pathname(root).expand_path
     @fetcher = fetcher
     @clock = clock
     @marker = @root.join(LOCK_FILENAME)
     @marker_mutex = @root.join(LOCK_MUTEX_FILENAME)
+    @global_marker = Pathname(global_marker).expand_path
+    unless Pathname(global_marker).absolute?
+      raise GuardError, "the device-wide lock path must be absolute"
+    end
+    if @global_marker == @marker
+      raise GuardError, "the device-wide lock must be separate from the repository lock"
+    end
+    @global_marker_mutex = Pathname("#{@global_marker}.mutex")
   end
 
   def lock(source)
     contest_id = normalize_manual_contest_id(source)
-    with_marker_mutex do
-      if marker_present?
-        return Operation.new(
-          success: true,
-          changed: false,
-          message: "AI assistance is already locked for this repository."
-        )
-      end
-
+    changed = false
+    with_marker_mutexes do
       locked_at = @clock.call
       raise GuardError, "the local clock did not return a Time" unless locked_at.is_a?(Time)
 
@@ -194,31 +225,36 @@ class AtCoderContestGuard
         "contest_id" => contest_id,
         "locked_at" => locked_at.utc.iso8601
       }
-      File.open(
-        @marker,
-        File::WRONLY | File::CREAT | File::EXCL,
-        0o600
-      ) do |file|
-        file.write("#{JSON.pretty_generate(metadata)}\n")
-        file.flush
-        file.fsync
+      contents = "#{JSON.pretty_generate(metadata)}\n"
+      [@global_marker, @marker].each do |marker|
+        next if marker_present?(marker)
+
+        changed = create_marker(marker, contents) || changed
       end
     end
 
-    Operation.new(
-      success: true,
-      changed: true,
-      message: <<~MESSAGE.strip
-        AI assistance locked for #{contest_id}.
-        This local lock does not expire automatically. After the contest, run:
-          make contest-unlock
-      MESSAGE
-    )
+    if changed
+      Operation.new(
+        success: true,
+        changed: true,
+        message: <<~MESSAGE.strip
+          AI assistance locked for #{contest_id} on this device and repository.
+          This manual lock does not expire automatically. After the contest, run:
+            make contest-unlock
+        MESSAGE
+      )
+    else
+      Operation.new(
+        success: true,
+        changed: false,
+        message: "AI assistance is already locked for this device and repository."
+      )
+    end
   rescue Errno::EEXIST
     Operation.new(
       success: true,
       changed: false,
-      message: "AI assistance is already locked for this repository."
+      message: "AI assistance is already locked for this device and repository."
     )
   rescue GuardError, IOError, SystemCallError => e
     Operation.new(
@@ -229,41 +265,67 @@ class AtCoderContestGuard
   end
 
   def unlock
-    with_marker_mutex do
-      stat = marker_lstat
-      unless stat
+    removed = []
+    with_marker_mutexes do
+      markers = [@marker, @global_marker]
+      markers.each do |marker|
+        stat = marker_lstat(marker)
+        next unless stat
+
+        unless stat.file?
+          raise GuardError,
+            "#{marker} is not a regular file; remove it manually after inspection"
+        end
+      end
+      markers.each do |marker|
+        next unless marker_lstat(marker)
+
+        File.unlink(marker)
+        removed << marker
+      end
+      if removed.empty?
         return Operation.new(
           success: true,
           changed: false,
-          message: "AI assistance lock is already absent."
+          message: "AI assistance locks are already absent."
         )
       end
-      unless stat.file?
-        return Operation.new(
-          success: false,
-          changed: false,
-          message: "BLOCKED: #{LOCK_FILENAME} is not a regular file; remove it manually after inspection."
-        )
-      end
-
-      File.unlink(@marker)
     end
     Operation.new(
       success: true,
       changed: true,
-      message: "Manual AI lock removed. This does not prove that the contest ended; use AI only after checking the official page."
+      message: "Manual AI locks removed. This does not prove that the contest ended; use AI only after checking the official page."
     )
   rescue Errno::ENOENT
     Operation.new(
       success: true,
       changed: false,
-      message: "AI assistance lock is already absent."
+      message: "AI assistance locks are already absent."
     )
-  rescue IOError, SystemCallError => e
+  rescue GuardError, IOError, SystemCallError => e
     Operation.new(
       success: false,
       changed: false,
-      message: "BLOCKED: could not remove the AI lock safely: #{e.message}"
+      message: "BLOCKED: could not remove the AI locks safely: #{e.message}"
+    )
+  end
+
+  def status
+    scopes = manual_lock_scopes
+    if scopes.empty?
+      Decision.new(
+        allowed: true,
+        state: :clear,
+        message: "CLEAR: no manual repository or device AI lock is active."
+      )
+    else
+      locked_decision(scopes)
+    end
+  rescue GuardError, IOError, SystemCallError => e
+    Decision.new(
+      allowed: false,
+      state: :indeterminate,
+      message: "BLOCKED: manual AI lock status could not be determined safely: #{e.message}"
     )
   end
 
@@ -288,7 +350,8 @@ class AtCoderContestGuard
   private
 
   def safely_check
-    return locked_decision if marker_present?
+    scopes = manual_lock_scopes
+    return locked_decision(scopes) unless scopes.empty?
 
     contest_id = yield
     unless contest_id.match?(COVERED_CONTEST_PATTERN)
@@ -301,13 +364,15 @@ class AtCoderContestGuard
     validate_fetch_response!(response)
     schedule = parse_schedule(response.body, contest_id)
     now = response.server_time
-    return locked_decision if marker_present?
+    scopes = manual_lock_scopes
+    return locked_decision(scopes) unless scopes.empty?
 
     safe_start = schedule.start_at - START_SAFETY_MARGIN
     safe_end = schedule.end_at + END_SAFETY_MARGIN
 
     if now < safe_start
-      return locked_decision if marker_present?
+      scopes = manual_lock_scopes
+      return locked_decision(scopes) unless scopes.empty?
 
       Decision.new(
         allowed: true,
@@ -345,7 +410,8 @@ class AtCoderContestGuard
         message: "BLOCKED: waiting #{END_SAFETY_MARGIN / 60} minutes after the published end for possible extensions; check again at #{safe_end.iso8601}."
       )
     else
-      return locked_decision if marker_present?
+      scopes = manual_lock_scopes
+      return locked_decision(scopes) unless scopes.empty?
 
       Decision.new(
         allowed: true,
@@ -364,18 +430,25 @@ class AtCoderContestGuard
     )
   end
 
-  def marker_lstat
-    File.lstat(@marker)
+  def marker_lstat(marker = @marker)
+    File.lstat(marker)
   rescue Errno::ENOENT
     nil
   end
 
-  def with_marker_mutex
+  def with_marker_mutexes
+    prepare_global_marker_parent!
+    with_file_mutex(@global_marker_mutex) do
+      with_file_mutex(@marker_mutex) { yield }
+    end
+  end
+
+  def with_file_mutex(mutex)
     flags = File::RDWR | File::CREAT
     flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-    File.open(@marker_mutex, flags, 0o600) do |file|
+    File.open(mutex, flags, 0o600) do |file|
       unless file.stat.file?
-        raise GuardError, "#{LOCK_MUTEX_FILENAME} must be a regular file"
+        raise GuardError, "#{mutex} must be a regular file"
       end
 
       file.flock(File::LOCK_EX)
@@ -385,15 +458,49 @@ class AtCoderContestGuard
     end
   end
 
-  def marker_present?
-    !marker_lstat.nil?
+  def prepare_global_marker_parent!
+    parent = @global_marker.parent
+    FileUtils.mkdir_p(parent, mode: 0o700)
+    stat = File.lstat(parent)
+    unless stat.directory? && !stat.symlink?
+      raise GuardError, "the device lock directory must be a non-symlink directory"
+    end
+  rescue IOError, SystemCallError => e
+    raise GuardError, "could not prepare the device lock directory: #{e.message}"
   end
 
-  def locked_decision
+  def create_marker(marker, contents)
+    File.open(
+      marker,
+      File::WRONLY | File::CREAT | File::EXCL |
+        (File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0),
+      0o600
+    ) do |file|
+      file.write(contents)
+      file.flush
+      file.fsync
+    end
+    true
+  rescue Errno::EEXIST
+    false
+  end
+
+  def marker_present?(marker = @marker)
+    !marker_lstat(marker).nil?
+  end
+
+  def manual_lock_scopes
+    scopes = []
+    scopes << "repository" if marker_present?(@marker)
+    scopes << "device" if marker_present?(@global_marker)
+    scopes
+  end
+
+  def locked_decision(scopes = manual_lock_scopes)
     Decision.new(
       allowed: false,
       state: :locked,
-      message: "BLOCKED: repository AI assistance lock is active."
+      message: "BLOCKED: manual AI assistance lock is active (#{scopes.join(" and ")})."
     )
   end
 
@@ -645,6 +752,7 @@ class AtCoderContestGuardCLI
     Usage:
       bin/contest-guard lock CONTEST
       bin/contest-guard unlock
+      bin/contest-guard status
       bin/contest-guard check --contest CONTEST [URL_OR_PATH]
       bin/contest-guard check URL_OR_PATH
   USAGE
@@ -671,6 +779,12 @@ class AtCoderContestGuardCLI
       operation = guard.unlock
       (operation.success? ? stdout : stderr).puts(operation.message)
       operation.success? ? 0 : 1
+    when "status"
+      return 2 unless no_arguments?(argv, stderr)
+
+      decision = guard.status
+      (decision.allowed? ? stdout : stderr).puts(decision.message)
+      decision.allowed? ? 0 : 1
     when "check"
       explicit_contest = argv.first == "--contest"
       argv.shift if explicit_contest

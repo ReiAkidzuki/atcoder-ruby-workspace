@@ -32,16 +32,30 @@ make contest-lock CONTEST=abc469
 make vscode-safe
 ```
 
-The lock is stored as `.atcoder-contest-lock` in the repository root.
-Git ignores this file, and its existence alone means that the repository is locked.
-The guard fails closed even if its contents are corrupt, and the lock never expires automatically.
-It is local to one checkout, so run the command on every machine used for the contest.
+The lock is stored both as `.atcoder-contest-lock` in the repository root and
+as the device-wide
+`${XDG_STATE_HOME:-$HOME/.local/state}/atcoder-workspace/contest-lock`.
+Git ignores both files, and either file's existence means assistance is locked.
+The guard fails closed even if their contents are corrupt, and the locks never
+expire automatically. The device-wide lock is detected by compatible Ruby and
+Crystal workspaces on the same machine. It is not shared with another device,
+so run the command on every machine used for the contest.
+
+Inspect the current manual lock state without accessing the network:
+
+```sh
+make contest-status
+```
 
 After confirming on the official page that the contest has ended, remove the lock yourself:
 
 ```sh
 make contest-unlock
 ```
+
+This removes the current repository lock and the device-wide lock. If you
+separately ran `make contest-lock` in another repository, unlock that
+repository-local marker from that repository as well.
 
 Compatible AI agents are instructed to perform the equivalent of the following check automatically before contest-related work.
 You can also run it manually:
@@ -57,13 +71,14 @@ bin/contest-guard check abc469/a
 The guard freshly fetches the target contest's official top page and AtCoder's `/servertime`, then compares the page's contest ID and start/end times with the official server time.
 It blocks from five minutes before the start to avoid work crossing the boundary, and remains blocked for 20 minutes after the published end while AtCoder's [outage extension policy](https://atcoder.jp/posts/1027?lang=en) is reflected on the page.
 It exits nonzero and stops the AI agent when the contest is ongoing, the request fails, the page format has changed, the target or times conflict, or the status is otherwise indeterminate.
-Automatic status checks never create or remove `.atcoder-contest-lock`.
+Automatic schedule checks never create or remove either manual lock.
 
 An automatic result is only a point-in-time aid and does not replace checking the official page or using the manual lock.
 Automatic checking is limited to ABCs, ARCs, and AGCs covered by the current common rule.
 AHCs and other contest families are never reported as `CLEAR`, avoiding accidental application of the wrong rules.
 The check is target-specific and cannot know whether the user joined a different ongoing contest.
-The manual repository lock is the primary representation of that participation state.
+The manual repository and device locks are the primary representation of that
+participation state.
 
 ### Disable AI features in VS Code
 

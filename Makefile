@@ -4,7 +4,7 @@ COUNT ?= 100
 SEED ?= 1
 RUBY ?= rbenv exec ruby
 
-.PHONY: help setup setup-full vscode-safe contest-lock contest-unlock contest-check update-template doctor self-test login contest tasks new add-case test run bundle init-random random submit
+.PHONY: help setup setup-full vscode-safe contest-lock contest-unlock contest-status contest-check update-template doctor self-test login contest tasks new add-case test run bundle init-random random submit
 
 help:
 	@echo "AtCoder Ruby workspace"
@@ -14,6 +14,7 @@ help:
 	@echo "  make vscode-safe"
 	@echo "  make contest-lock CONTEST=abc469"
 	@echo "  make contest-unlock"
+	@echo "  make contest-status"
 	@echo "  make contest-check CONTEST=abc469"
 	@echo "  make update-template"
 	@echo "  make doctor"
@@ -45,6 +46,9 @@ contest-lock:
 
 contest-unlock:
 	@./bin/contest-guard unlock
+
+contest-status:
+	@./bin/contest-guard status
 
 contest-check:
 	@test -n "$(CONTEST)" || (echo "CONTEST is required"; exit 2)
