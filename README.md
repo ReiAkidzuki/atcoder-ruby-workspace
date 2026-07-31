@@ -21,7 +21,49 @@ The rules may change, so check the latest official version before every contest.
 
 During a covered contest, generative AI is prohibited except for problem-statement translation performed exactly as the rules specify.
 The prohibition includes AI-based code completion, problem-statement summarization, compiler-error or bug diagnosis, and programming-language conversion, as well as generating solutions or code.
-Non-AI completion remains permitted, but this workspace keeps generative-AI features disabled to prevent accidental use.
+Non-AI completion remains permitted, but this workspace keeps generative-AI features disabled in compatible VS Code features to prevent accidental use.
+
+### Contest lock and automatic status check
+
+Before participating in a covered contest, manually lock AI assistance for the entire repository:
+
+```sh
+make contest-lock CONTEST=abc469
+make vscode-safe
+```
+
+The lock is stored as `.atcoder-contest-lock` in the repository root.
+Git ignores this file, and its existence alone means that the repository is locked.
+The guard fails closed even if its contents are corrupt, and the lock never expires automatically.
+It is local to one checkout, so run the command on every machine used for the contest.
+
+After confirming on the official page that the contest has ended, remove the lock yourself:
+
+```sh
+make contest-unlock
+```
+
+Compatible AI agents are instructed to perform the equivalent of the following check automatically before contest-related work.
+You can also run it manually:
+
+```sh
+make contest-check CONTEST=abc469
+# Also pass the target path to detect conflicts with the explicit ID
+bin/contest-guard check --contest abc469 abc469/a
+# A URL or workspace path can also be resolved on its own
+bin/contest-guard check abc469/a
+```
+
+The guard freshly fetches the target contest's official top page and AtCoder's `/servertime`, then compares the page's contest ID and start/end times with the official server time.
+It blocks from five minutes before the start to avoid work crossing the boundary, and remains blocked for 20 minutes after the published end while AtCoder's [outage extension policy](https://atcoder.jp/posts/1027?lang=en) is reflected on the page.
+It exits nonzero and stops the AI agent when the contest is ongoing, the request fails, the page format has changed, the target or times conflict, or the status is otherwise indeterminate.
+Automatic status checks never create or remove `.atcoder-contest-lock`.
+
+An automatic result is only a point-in-time aid and does not replace checking the official page or using the manual lock.
+Automatic checking is limited to ABCs, ARCs, and AGCs covered by the current common rule.
+AHCs and other contest families are never reported as `CLEAR`, avoiding accidental application of the wrong rules.
+The check is target-specific and cannot know whether the user joined a different ongoing contest.
+The manual repository lock is the primary representation of that participation state.
 
 ### Disable AI features in VS Code
 
@@ -33,10 +75,11 @@ make vscode-safe
 ```
 
 This command uses [`code --new-window --disable-extensions`](https://code.visualstudio.com/docs/configure/command-line), disabling every extension in that window, including non-AI extensions.
-`AGENTS.md` and `.github/copilot-instructions.md` tell compatible AI agents not to handle live-contest tasks.
+`AGENTS.md` and `.github/copilot-instructions.md` tell compatible AI agents to check the manual lock and official schedule and not to handle ongoing or indeterminate contest tasks.
 
 These settings are precautions and do not guarantee compliance.
-They cannot control other editors, VS Code derivatives, existing VS Code windows, browser or desktop applications, CLI tools, or conversational AI search.
+They do not guarantee that AI is inactive in other editors, VS Code derivatives, other windows or already-running tools, browser or desktop applications, CLI tools, or conversational AI search.
+The contest guard also cannot be technically enforced on AI tools that ignore the repository instructions.
 Before the contest starts, close AI applications, AI-enabled CLI sessions, and browser AI chats, then verify that generative AI is disabled in every environment you use.
 Do not view AI-generated search overviews.
 
@@ -415,7 +458,7 @@ make self-test
 
 The self-tests live under `test/`.
 They use isolated temporary directories and fake external commands, so they do not modify problem files or require login or network access.
-The suite covers library ordering, automatic bundling, manual `bundle`, random testing, browser-submission snapshots, clipboard/browser handoff, overwrite protection, source validation, login tool discovery, and OS-specific command selection.
+The suite covers library ordering, automatic bundling, manual `bundle`, random testing, browser-submission snapshots, contest-lock behavior, schedule boundaries, fail-closed status checks, clipboard/browser handoff, overwrite protection, source validation, login tool discovery, and OS-specific command selection.
 GitHub Actions runs the same self-tests and the installed AtCoder parser compatibility check on both macOS and Ubuntu.
 A separate Ubuntu x86_64 environment smoke workflow, available manually and on a monthly schedule, installs Ruby, builds all native gems, verifies LibTorch, and exercises every one of the 20 nonstandard gems.
 

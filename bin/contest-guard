@@ -1,0 +1,720 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "net/http"
+require "pathname"
+require "date"
+require "time"
+require "uri"
+
+class AtCoderContestGuard
+  ATCODER_HOST = "atcoder.jp"
+  LOCK_FILENAME = ".atcoder-contest-lock"
+  LOCK_MUTEX_FILENAME = ".atcoder-contest-lock.mutex"
+  LOCK_VERSION = 1
+  USER_AGENT = "AtCoderRubyWorkspaceContestGuard/1.0"
+  START_SAFETY_MARGIN = 5 * 60
+  END_SAFETY_MARGIN = 20 * 60
+  CONTEST_ID_PATTERN = /\A[a-z0-9][a-z0-9_-]*\z/
+  COVERED_CONTEST_PATTERN = /\A(?:abc|arc|agc)\d+\z/
+  OFFICIAL_TIME_PATTERN = %r{
+    \A
+    (?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})
+    T
+    (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})
+    (?:\.\d+)?
+    (?<offset>Z|[+-](?<offset_hour>\d{2}):(?<offset_minute>\d{2}))
+    \z
+  }x
+  SERVER_TIME_PATTERN = %r{
+    \A
+    (?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})
+    \x20
+    (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})
+    (?<offset>[+-](?<offset_hour>\d{2})(?<offset_minute>\d{2}))
+    \z
+  }x
+
+  Decision = Struct.new(
+    :allowed,
+    :state,
+    :message,
+    :contest_id,
+    :start_at,
+    :end_at,
+    keyword_init: true
+  ) do
+    def allowed?
+      allowed
+    end
+  end
+
+  Operation = Struct.new(
+    :success,
+    :changed,
+    :message,
+    keyword_init: true
+  ) do
+    def success?
+      success
+    end
+
+    def changed?
+      changed
+    end
+  end
+
+  FetchResponse = Struct.new(:body, :server_time, keyword_init: true)
+  Schedule = Struct.new(:start_at, :end_at, keyword_init: true)
+
+  class GuardError < StandardError; end
+
+  class HttpFetcher
+    MAX_REDIRECTS = 3
+    MAX_RESPONSE_SIZE = 2 * 1024 * 1024
+    REQUEST_HEADERS = {
+      "Cache-Control" => "no-cache, no-store",
+      "Pragma" => "no-cache"
+    }.freeze
+
+    def initialize(requester: nil, nonce: nil)
+      @requester = requester || method(:net_http_request)
+      @nonce = nonce || lambda {
+        (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i.to_s
+      }
+    end
+
+    def call(uri)
+      body = fetch_body(uri, MAX_REDIRECTS)
+      query = URI.encode_www_form(ts: @nonce.call.to_s)
+      server_time_body = fetch_body(
+        URI("https://#{ATCODER_HOST}/servertime?#{query}"),
+        MAX_REDIRECTS
+      ).strip
+      server_time_match = SERVER_TIME_PATTERN.match(server_time_body)
+      unless server_time_match
+        raise GuardError, "the official server time has an unexpected format"
+      end
+      AtCoderContestGuard.validate_time_components!(
+        server_time_match,
+        "official server time"
+      )
+
+      FetchResponse.new(
+        body:,
+        server_time: Time.strptime(
+          server_time_body,
+          "%Y-%m-%d %H:%M:%S%z"
+        )
+      )
+    rescue ArgumentError => e
+      raise GuardError, "invalid official server time: #{e.message}"
+    end
+
+    private
+
+    def fetch_body(uri, redirects_left)
+      validate_uri!(uri)
+      response = @requester.call(uri, REQUEST_HEADERS)
+      code = Integer(response.code, 10)
+
+      if code.between?(200, 299)
+        body = response.body
+        raise GuardError, "official response body is invalid" unless body.is_a?(String)
+        raise GuardError, "official response body is too large" if body.bytesize > MAX_RESPONSE_SIZE
+
+        body = body.dup
+        body.force_encoding(Encoding::UTF_8)
+        return body
+      end
+      if code.between?(300, 399)
+        raise GuardError, "too many redirects" if redirects_left.zero?
+
+        location = response["location"]
+        raise GuardError, "redirect without Location" unless location
+
+        return fetch_body(URI.join(uri, location), redirects_left - 1)
+      end
+
+      raise GuardError, "official page returned HTTP #{code}"
+    rescue ArgumentError => e
+      raise GuardError, "invalid official HTTP response: #{e.message}"
+    rescue IOError, SocketError, SystemCallError, Timeout::Error => e
+      raise GuardError, "official page request failed: #{e.message}"
+    end
+
+    def net_http_request(uri, headers)
+      request = Net::HTTP::Get.new(uri)
+      request["User-Agent"] = USER_AGENT
+      headers.each { |name, value| request[name] = value }
+      Net::HTTP.start(
+        uri.host,
+        uri.port,
+        use_ssl: true,
+        open_timeout: 10,
+        read_timeout: 30
+      ) { |http| http.request(request) }
+    end
+
+    def validate_uri!(uri)
+      return if uri.is_a?(URI::HTTPS) &&
+        uri.host == ATCODER_HOST &&
+        uri.port == 443 &&
+        uri.userinfo.nil?
+
+      raise GuardError, "refused a non-AtCoder redirect"
+    end
+  end
+
+  def initialize(root:, fetcher: HttpFetcher.new, clock: -> { Time.now })
+    @root = Pathname(root).expand_path
+    @fetcher = fetcher
+    @clock = clock
+    @marker = @root.join(LOCK_FILENAME)
+    @marker_mutex = @root.join(LOCK_MUTEX_FILENAME)
+  end
+
+  def lock(source)
+    contest_id = normalize_manual_contest_id(source)
+    with_marker_mutex do
+      if marker_present?
+        return Operation.new(
+          success: true,
+          changed: false,
+          message: "AI assistance is already locked for this repository."
+        )
+      end
+
+      locked_at = @clock.call
+      raise GuardError, "the local clock did not return a Time" unless locked_at.is_a?(Time)
+
+      metadata = {
+        "version" => LOCK_VERSION,
+        "contest_id" => contest_id,
+        "locked_at" => locked_at.utc.iso8601
+      }
+      File.open(
+        @marker,
+        File::WRONLY | File::CREAT | File::EXCL,
+        0o600
+      ) do |file|
+        file.write("#{JSON.pretty_generate(metadata)}\n")
+        file.flush
+        file.fsync
+      end
+    end
+
+    Operation.new(
+      success: true,
+      changed: true,
+      message: <<~MESSAGE.strip
+        AI assistance locked for #{contest_id}.
+        This local lock does not expire automatically. After the contest, run:
+          make contest-unlock
+      MESSAGE
+    )
+  rescue Errno::EEXIST
+    Operation.new(
+      success: true,
+      changed: false,
+      message: "AI assistance is already locked for this repository."
+    )
+  rescue GuardError, IOError, SystemCallError => e
+    Operation.new(
+      success: false,
+      changed: false,
+      message: "BLOCKED: could not create the AI lock safely: #{e.message}"
+    )
+  end
+
+  def unlock
+    with_marker_mutex do
+      stat = marker_lstat
+      unless stat
+        return Operation.new(
+          success: true,
+          changed: false,
+          message: "AI assistance lock is already absent."
+        )
+      end
+      unless stat.file?
+        return Operation.new(
+          success: false,
+          changed: false,
+          message: "BLOCKED: #{LOCK_FILENAME} is not a regular file; remove it manually after inspection."
+        )
+      end
+
+      File.unlink(@marker)
+    end
+    Operation.new(
+      success: true,
+      changed: true,
+      message: "Manual AI lock removed. This does not prove that the contest ended; use AI only after checking the official page."
+    )
+  rescue Errno::ENOENT
+    Operation.new(
+      success: true,
+      changed: false,
+      message: "AI assistance lock is already absent."
+    )
+  rescue IOError, SystemCallError => e
+    Operation.new(
+      success: false,
+      changed: false,
+      message: "BLOCKED: could not remove the AI lock safely: #{e.message}"
+    )
+  end
+
+  def check(source)
+    safely_check { resolve_contest_id(source) }
+  end
+
+  def check_contest(source, target = nil)
+    safely_check do
+      contest_id = normalize_manual_contest_id(source)
+      if target
+        target_id = resolve_contest_id(target)
+        if contest_id != target_id
+          raise GuardError,
+            "explicit contest #{contest_id} conflicts with target metadata #{target_id}"
+        end
+      end
+      contest_id
+    end
+  end
+
+  private
+
+  def safely_check
+    return locked_decision if marker_present?
+
+    contest_id = yield
+    unless contest_id.match?(COVERED_CONTEST_PATTERN)
+      raise GuardError,
+        "#{contest_id} is outside the automatic ABC/ARC/AGC policy; check its current rules manually"
+    end
+
+    uri = URI("https://#{ATCODER_HOST}/contests/#{contest_id}?lang=en")
+    response = @fetcher.call(uri)
+    validate_fetch_response!(response)
+    schedule = parse_schedule(response.body, contest_id)
+    now = response.server_time
+    return locked_decision if marker_present?
+
+    safe_start = schedule.start_at - START_SAFETY_MARGIN
+    safe_end = schedule.end_at + END_SAFETY_MARGIN
+
+    if now < safe_start
+      return locked_decision if marker_present?
+
+      Decision.new(
+        allowed: true,
+        state: :upcoming,
+        contest_id:,
+        start_at: schedule.start_at,
+        end_at: schedule.end_at,
+        message: "CLEAR: #{contest_id} has not started; it starts at #{schedule.start_at.iso8601}."
+      )
+    elsif now < schedule.start_at
+      Decision.new(
+        allowed: false,
+        state: :starting_soon,
+        contest_id:,
+        start_at: schedule.start_at,
+        end_at: schedule.end_at,
+        message: "BLOCKED: #{contest_id} starts within #{START_SAFETY_MARGIN / 60} minutes at #{schedule.start_at.iso8601}."
+      )
+    elsif now < schedule.end_at
+      Decision.new(
+        allowed: false,
+        state: :ongoing,
+        contest_id:,
+        start_at: schedule.start_at,
+        end_at: schedule.end_at,
+        message: "BLOCKED: #{contest_id} is ongoing until #{schedule.end_at.iso8601}."
+      )
+    elsif now < safe_end
+      Decision.new(
+        allowed: false,
+        state: :cooldown,
+        contest_id:,
+        start_at: schedule.start_at,
+        end_at: schedule.end_at,
+        message: "BLOCKED: waiting #{END_SAFETY_MARGIN / 60} minutes after the published end for possible extensions; check again at #{safe_end.iso8601}."
+      )
+    else
+      return locked_decision if marker_present?
+
+      Decision.new(
+        allowed: true,
+        state: :ended,
+        contest_id:,
+        start_at: schedule.start_at,
+        end_at: schedule.end_at,
+        message: "CLEAR: #{contest_id} ended at #{schedule.end_at.iso8601}."
+      )
+    end
+  rescue StandardError => e
+    Decision.new(
+      allowed: false,
+      state: :indeterminate,
+      message: "BLOCKED: contest status could not be determined safely: #{e.message}"
+    )
+  end
+
+  def marker_lstat
+    File.lstat(@marker)
+  rescue Errno::ENOENT
+    nil
+  end
+
+  def with_marker_mutex
+    flags = File::RDWR | File::CREAT
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    File.open(@marker_mutex, flags, 0o600) do |file|
+      unless file.stat.file?
+        raise GuardError, "#{LOCK_MUTEX_FILENAME} must be a regular file"
+      end
+
+      file.flock(File::LOCK_EX)
+      yield
+    ensure
+      file&.flock(File::LOCK_UN)
+    end
+  end
+
+  def marker_present?
+    !marker_lstat.nil?
+  end
+
+  def locked_decision
+    Decision.new(
+      allowed: false,
+      state: :locked,
+      message: "BLOCKED: repository AI assistance lock is active."
+    )
+  end
+
+  def normalize_manual_contest_id(source)
+    value = source.to_s.downcase
+    unless value.match?(CONTEST_ID_PATTERN)
+      raise GuardError, "invalid contest ID: #{source.inspect}"
+    end
+
+    value
+  end
+
+  def resolve_contest_id(source)
+    value = source.to_s
+    raise GuardError, "a contest ID, URL, or workspace path is required" if value.empty?
+
+    return contest_id_from_url(value) if value.start_with?("https://", "http://")
+
+    normalized = value.downcase
+    if normalized.match?(CONTEST_ID_PATTERN) && !workspace_entry?(value)
+      return normalized
+    end
+
+    contest_id_from_path(value)
+  end
+
+  def workspace_entry?(value)
+    candidate = Pathname(value)
+    candidate = @root.join(candidate) unless candidate.absolute?
+    candidate = candidate.expand_path
+    return true unless candidate == @root ||
+      candidate.to_s.start_with?("#{@root}#{File::SEPARATOR}")
+
+    File.lstat(candidate)
+    true
+  rescue Errno::ENOENT
+    false
+  end
+
+  def contest_id_from_url(value)
+    uri = URI.parse(value)
+    unless uri.is_a?(URI::HTTPS) &&
+        uri.host == ATCODER_HOST &&
+        uri.userinfo.nil?
+      raise GuardError, "only https://#{ATCODER_HOST}/ contest URLs are accepted"
+    end
+
+    match = uri.path.match(
+      %r{\A/contests/([a-zA-Z0-9_-]+)(?:/tasks/[a-zA-Z0-9_-]+)?/?\z}
+    )
+    raise GuardError, "not an AtCoder contest or task URL" unless match
+
+    match[1].downcase
+  rescue URI::InvalidURIError => e
+    raise GuardError, "invalid URL: #{e.message}"
+  end
+
+  def contest_id_from_path(value)
+    candidate = Pathname(value)
+    candidate = @root.join(candidate) unless candidate.absolute?
+    candidate = candidate.expand_path
+    ensure_inside_root!(candidate)
+    reject_symlinked_path!(candidate)
+
+    directory = candidate.directory? ? candidate : candidate.parent
+    metadata_ids = []
+    current = directory
+    loop do
+      contest_metadata = current.join(".contest.json")
+      problem_metadata = current.join(".problem-url")
+      metadata_ids << contest_id_from_contest_metadata(contest_metadata) if path_entry?(contest_metadata)
+      metadata_ids << contest_id_from_problem_metadata(problem_metadata) if path_entry?(problem_metadata)
+      break if current == @root
+
+      current = current.parent
+    end
+
+    relative = candidate.relative_path_from(@root)
+    top_level = relative.each_filename.first
+    metadata_ids << top_level.downcase if top_level&.downcase&.match?(COVERED_CONTEST_PATTERN)
+    raise GuardError, "no contest metadata found for #{value}" if metadata_ids.empty?
+
+    unique_ids = metadata_ids.uniq
+    if unique_ids.length != 1
+      raise GuardError, "conflicting contest metadata: #{unique_ids.join(", ")}"
+    end
+
+    unique_ids.first
+  end
+
+  def contest_id_from_contest_metadata(path)
+    reject_non_regular_metadata!(path)
+    metadata = JSON.parse(path.read)
+    raise GuardError, "#{relative(path)} must contain a JSON object" unless metadata.is_a?(Hash)
+
+    contest_id = metadata["id"]
+    url = metadata["url"]
+    unless contest_id.is_a?(String) && contest_id.match?(CONTEST_ID_PATTERN)
+      raise GuardError, "#{relative(path)} has an invalid contest ID"
+    end
+    unless url.is_a?(String)
+      raise GuardError, "#{relative(path)} has no contest URL"
+    end
+
+    url_id = contest_id_from_url(url)
+    if contest_id.downcase != url_id
+      raise GuardError, "#{relative(path)} has conflicting ID and URL"
+    end
+
+    contest_id.downcase
+  rescue JSON::ParserError => e
+    raise GuardError, "#{relative(path)} is invalid JSON: #{e.message}"
+  end
+
+  def contest_id_from_problem_metadata(path)
+    reject_non_regular_metadata!(path)
+    contest_id_from_url(path.read.strip)
+  rescue IOError, SystemCallError => e
+    raise GuardError, "could not read #{relative(path)}: #{e.message}"
+  end
+
+  def reject_non_regular_metadata!(path)
+    stat = File.lstat(path)
+    return if stat.file?
+
+    raise GuardError, "#{relative(path)} must be a regular file"
+  end
+
+  def path_entry?(path)
+    File.lstat(path)
+    true
+  rescue Errno::ENOENT
+    false
+  end
+
+  def ensure_inside_root!(path)
+    return if path == @root
+    return if path.to_s.start_with?("#{@root}#{File::SEPARATOR}")
+
+    raise GuardError, "path is outside the workspace"
+  end
+
+  def reject_symlinked_path!(path)
+    relative = path.relative_path_from(@root)
+    current = @root
+    relative.each_filename do |component|
+      current = current.join(component)
+      begin
+        stat = File.lstat(current)
+      rescue Errno::ENOENT
+        next
+      end
+      raise GuardError, "workspace path contains a symbolic link" if stat.symlink?
+    end
+  end
+
+  def validate_fetch_response!(response)
+    unless response.respond_to?(:body) && response.body.is_a?(String)
+      raise GuardError, "the official response body is invalid"
+    end
+    unless response.respond_to?(:server_time) && response.server_time.is_a?(Time)
+      raise GuardError, "the official response time is unavailable"
+    end
+  end
+
+  def parse_schedule(html, contest_id)
+    screen_name = unique_javascript_value(
+      html,
+      /\bvar\s+contestScreenName\s*=\s*(["'])([^"']+)\1\s*;/,
+      "contestScreenName"
+    )
+    unless screen_name.downcase == contest_id
+      raise GuardError, "official page contest ID does not match #{contest_id}"
+    end
+
+    start_value = unique_javascript_value(
+      html,
+      /\bvar\s+startTime\s*=\s*moment\(\s*(["'])([^"']+)\1\s*\)\s*;/,
+      "startTime"
+    )
+    end_value = unique_javascript_value(
+      html,
+      /\bvar\s+endTime\s*=\s*moment\(\s*(["'])([^"']+)\1\s*\)\s*;/,
+      "endTime"
+    )
+    start_at = parse_official_time(start_value)
+    end_at = parse_official_time(end_value)
+    raise GuardError, "official contest end time is not after its start time" unless start_at < end_at
+
+    Schedule.new(start_at:, end_at:)
+  end
+
+  def unique_javascript_value(html, pattern, name)
+    values = html.scan(pattern).map { |_quote, value| value }
+    unless values.length == 1
+      raise GuardError, "official page must define #{name} exactly once"
+    end
+
+    values.first
+  end
+
+  def parse_official_time(value)
+    match = OFFICIAL_TIME_PATTERN.match(value)
+    unless match
+      raise GuardError, "official contest time has no explicit UTC offset"
+    end
+    self.class.validate_time_components!(match, "official contest time")
+
+    Time.iso8601(value)
+  rescue ArgumentError => e
+    raise GuardError, "official contest time is invalid: #{e.message}"
+  end
+
+  def self.validate_time_components!(match, label)
+    year = Integer(match[:year], 10)
+    valid_date = year >= 2010 && Date.valid_date?(
+      year,
+      Integer(match[:month], 10),
+      Integer(match[:day], 10)
+    )
+    valid_clock = Integer(match[:hour], 10).between?(0, 23) &&
+      Integer(match[:minute], 10).between?(0, 59) &&
+      Integer(match[:second], 10).between?(0, 59)
+    valid_offset = if match[:offset] == "Z"
+      true
+    else
+      offset_hour = Integer(match[:offset_hour], 10)
+      offset_minute = Integer(match[:offset_minute], 10)
+      offset_minute.between?(0, 59) &&
+        (
+          offset_hour.between?(0, 13) ||
+          (offset_hour == 14 && offset_minute.zero?)
+        )
+    end
+    return if valid_date && valid_clock && valid_offset
+
+    raise GuardError, "#{label} contains an invalid calendar value"
+  end
+
+  def relative(path)
+    path.relative_path_from(@root).to_s
+  rescue ArgumentError
+    path.to_s
+  end
+end
+
+class AtCoderContestGuardCLI
+  USAGE = <<~USAGE
+    Usage:
+      bin/contest-guard lock CONTEST
+      bin/contest-guard unlock
+      bin/contest-guard check --contest CONTEST [URL_OR_PATH]
+      bin/contest-guard check URL_OR_PATH
+  USAGE
+
+  def self.run(
+    argv,
+    guard: AtCoderContestGuard.new(root: Pathname(__dir__).parent),
+    stdout: $stdout,
+    stderr: $stderr
+  )
+    command = argv.shift
+
+    case command
+    when "lock"
+      source = required_argument(argv, stderr)
+      return 2 unless source && no_arguments?(argv, stderr)
+
+      operation = guard.lock(source)
+      (operation.success? ? stdout : stderr).puts(operation.message)
+      operation.success? ? 0 : 1
+    when "unlock"
+      return 2 unless no_arguments?(argv, stderr)
+
+      operation = guard.unlock
+      (operation.success? ? stdout : stderr).puts(operation.message)
+      operation.success? ? 0 : 1
+    when "check"
+      explicit_contest = argv.first == "--contest"
+      argv.shift if explicit_contest
+      source = required_argument(argv, stderr)
+      return 2 unless source
+
+      decision = if explicit_contest
+        target = argv.shift
+        return 2 unless no_arguments?(argv, stderr)
+
+        guard.check_contest(source, target)
+      else
+        return 2 unless no_arguments?(argv, stderr)
+
+        guard.check(source)
+      end
+      (decision.allowed? ? stdout : stderr).puts(decision.message)
+      decision.allowed? ? 0 : 1
+    when "help", "--help", "-h"
+      stdout.puts(USAGE)
+      0
+    else
+      stderr.puts(USAGE)
+      2
+    end
+  end
+
+  def self.required_argument(argv, stderr)
+    return argv.shift unless argv.empty?
+
+    stderr.puts(USAGE)
+    nil
+  end
+  private_class_method :required_argument
+
+  def self.no_arguments?(argv, stderr)
+    return true if argv.empty?
+
+    stderr.puts(USAGE)
+    false
+  end
+  private_class_method :no_arguments?
+end
+
+if $PROGRAM_NAME == __FILE__
+  exit AtCoderContestGuardCLI.run(ARGV)
+end

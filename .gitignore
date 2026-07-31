@@ -16,6 +16,8 @@ __pycache__/
 !.env.example
 *.cookie
 cookie.jar
+/.atcoder-contest-lock
+/.atcoder-contest-lock.mutex
 
 # online-judge-tools temporary output
 *.actual
