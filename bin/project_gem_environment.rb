@@ -6,6 +6,10 @@ module AtCoderProjectGemEnvironment
   BUNDLER_VERSION = "2.6.9"
   BUNDLER_REQUIREMENT = "= 2.6.9"
   ACTIVATION_MARKER = "ATCODER_PROJECT_GEM_HOME"
+  PROFILE_MARKER = ".bundle/atcoder-gem-profile"
+  CORE_PROFILE = "core"
+  FULL_PROFILE = "full"
+  OPTIONAL_GROUPS = "atcoder_optional:atcoder_optional_snapshot"
 
   module_function
 
@@ -25,6 +29,12 @@ module AtCoderProjectGemEnvironment
       abort "error: Ruby gems are not installed; run `make setup`"
     end
 
+    setup_target =
+      if profile(project_root) == FULL_PROFILE
+        "make setup-full"
+      else
+        "make setup"
+      end
     bundle = Gem.bin_path("bundler", "bundle", BUNDLER_REQUIREMENT)
     bundle_environment = {
       ACTIVATION_MARKER => nil,
@@ -34,8 +44,10 @@ module AtCoderProjectGemEnvironment
       "BUNDLE_FROZEN" => "true",
       "BUNDLE_GEMFILE" => gemfile,
       "BUNDLE_IGNORE_CONFIG" => "true",
+      "BUNDLE_ONLY" => "",
       "BUNDLE_PATH" => File.join(project_root, ".bundle/gems"),
-      "BUNDLE_WITHOUT" => "",
+      "BUNDLE_WITH" => bundle_with(project_root),
+      "BUNDLE_WITHOUT" => bundle_without(project_root),
       "GEM_HOME" => nil,
       "GEM_PATH" => nil,
       "RUBYLIB" => nil,
@@ -52,7 +64,7 @@ module AtCoderProjectGemEnvironment
       err: File::NULL
     )
     unless complete
-      abort "error: Ruby gem environment is incomplete; run `make setup`"
+      abort "error: Ruby gem environment is incomplete; run `#{setup_target}`"
     end
 
     exec(
@@ -64,7 +76,9 @@ module AtCoderProjectGemEnvironment
         "BUNDLE_FROZEN" => nil,
         "BUNDLE_GEMFILE" => nil,
         "BUNDLE_IGNORE_CONFIG" => nil,
+        "BUNDLE_ONLY" => nil,
         "BUNDLE_PATH" => nil,
+        "BUNDLE_WITH" => nil,
         "BUNDLE_WITHOUT" => nil,
         "GEM_HOME" => gem_home,
         "GEM_PATH" => gem_home,
@@ -76,6 +90,8 @@ module AtCoderProjectGemEnvironment
       File.expand_path(script),
       *arguments
     )
+  rescue ArgumentError => error
+    abort "error: #{error.message}"
   rescue Gem::GemNotFoundException
     abort "error: Bundler #{BUNDLER_VERSION} is unavailable; run `make setup`"
   end
@@ -84,5 +100,24 @@ module AtCoderProjectGemEnvironment
     ENV[ACTIVATION_MARKER] == gem_home &&
       File.expand_path(Gem.dir) == gem_home &&
       Gem.path.map { |path| File.expand_path(path) } == [gem_home]
+  end
+
+  def profile(project_root)
+    marker = File.join(File.expand_path(project_root), PROFILE_MARKER)
+    return FULL_PROFILE unless File.file?(marker)
+
+    value = File.read(marker).strip
+    return value if [CORE_PROFILE, FULL_PROFILE].include?(value)
+
+    raise ArgumentError,
+      "invalid AtCoder gem profile #{value.inspect} in #{marker}"
+  end
+
+  def bundle_without(project_root)
+    profile(project_root) == CORE_PROFILE ? OPTIONAL_GROUPS : ""
+  end
+
+  def bundle_with(project_root)
+    profile(project_root) == FULL_PROFILE ? OPTIONAL_GROUPS : ""
   end
 end

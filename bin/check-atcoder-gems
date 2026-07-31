@@ -10,17 +10,19 @@ require "pathname"
 
 project_root = Pathname(__dir__).parent.expand_path
 gemfile = project_root.join("Gemfile")
+profile = AtCoderProjectGemEnvironment.profile(project_root)
+groups = %i[
+  atcoder
+  atcoder_snapshot
+  ruby_bundled
+  ruby_default_dependencies
+]
+if profile == AtCoderProjectGemEnvironment::FULL_PROFILE
+  groups.concat(%i[atcoder_optional atcoder_optional_snapshot])
+end
 dsl = Bundler::Dsl.evaluate(gemfile.to_s, nil, {})
 dependencies = dsl.dependencies.select do |dependency|
-  (
-    dependency.groups &
-    %i[
-      atcoder
-      atcoder_snapshot
-      ruby_bundled
-      ruby_default_dependencies
-    ]
-  ).any?
+  (dependency.groups & groups).any?
 end
 
 failures = dependencies.filter_map do |dependency|
@@ -37,8 +39,13 @@ failures = dependencies.filter_map do |dependency|
 end
 
 if failures.empty?
-  atcoder_count = dependencies.count { |dependency| dependency.groups.include?(:atcoder) }
-  puts "#{atcoder_count} AtCoder gems and " \
+  atcoder_count = dependencies.count do |dependency|
+    (
+      dependency.groups &
+      %i[atcoder atcoder_optional]
+    ).any?
+  end
+  puts "#{atcoder_count} #{profile} AtCoder gems and " \
     "#{dependencies.length - atcoder_count} declared Ruby environment gems match Gemfile"
   exit 0
 end

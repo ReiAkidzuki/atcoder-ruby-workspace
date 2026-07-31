@@ -39,12 +39,22 @@ make doctor
 make self-test
 ```
 
-`make setup` は Ruby 3.4.5、AtCoder で利用できる gem とネイティブライブラリ、online-judge-tools (`oj`)、AtCoder のログイン補助 (`aclogin`) をインストールします。
-macOS のネイティブ依存関係は `Brewfile`、Ruby の依存関係は `Gemfile.lock` に従います。
-初回は OpenBLAS、OR-Tools、Torch のネイティブ拡張をビルドするため、完了まで時間がかかります。
+`make setup` は Ruby 3.4.5、通常プロファイルの gem とネイティブライブラリ、online-judge-tools (`oj`)、AtCoder のログイン補助 (`aclogin`) をインストールします。
+通常の `make setup` は競技アルゴリズム向けの軽量な10個の gem だけを導入し、数値計算・最適化・機械学習向けの重い gem を省略します。
+macOS の通常プロファイルのネイティブ依存関係は `Brewfile.core`、Ruby の依存関係は `Gemfile.lock` に従います。
+
+AtCoder が提供する非標準 gem をすべて使う場合は、完全プロファイルを導入します。
+
+```sh
+make setup-full
+```
+
+`make setup-full` は完全な `Brewfile` に従い、OpenBLAS、OR-Tools、Polars、Torch などを追加します。
+初回はLibTorchの取得とネイティブ拡張のビルドがあるため、完了まで時間がかかります。
 ネイティブ拡張のビルドには原則として2並列を指定します。
-必要なら `ATCODER_BUILD_JOBS=4 make setup` のように変更できますが、`numo-openblas` など一部の gem は独自に利用可能な CPU 数を選びます。
-`make doctor` は Ruby、Bundler、固定した gem、ネイティブライブラリ、AtCoder 用コマンドを検査します。
+必要なら `ATCODER_BUILD_JOBS=4 make setup-full` のように変更できますが、`numo-openblas` など一部の gem は独自に利用可能な CPU 数を選びます。
+`make doctor` は選択中のプロファイルに合わせて、Ruby、Bundler、固定した gem、ネイティブライブラリ、AtCoder 用コマンドを検査します。
+通常プロファイルでは、オプション gem の検査を `skip` として案内します。
 すべて `ok` なら、ローカル実行環境の準備は完了です。
 `make self-test` は、ネットワークへ接続せず、一時ディレクトリ内でこの作業環境自体の回帰テストを実行します。
 
@@ -67,14 +77,24 @@ Ruby 3.4.5 に付属する RubyGems 3.6.9 と Bundler 2.6.9 を使用し、AtCod
 | `sorted_containers` | 1.1.0 | `sorted_set` | 1.0.3 |
 | `torch-rb` | 0.21.0 | `z3` | 0.0.20230311 |
 
+インストールプロファイルは次の2段階です。
+
+- 通常の `make setup`：`ac-library-rb`、`bit_utils`、`bitarray`、`fast_trie`、`faster_prime`、`immutable-ruby`、`rbtree`、`rgl`、`sorted_containers`、`sorted_set`
+- `make setup-full`：上記に加えて `ffi-geos`、`lightgbm`、`numo-linalg`、`numo-narray`、`numo-openblas`、`or-tools`、`polars-df`、`rumale`、`torch-rb`、`z3`
+
+解答で後者の gem を `require` する場合は、先に `make setup-full` を実行してください。
+一度完全プロファイルを導入した後に `make setup` を実行しても、再導入時の長いビルドを避けるため、ダウンロード済みのオプション gem は削除しません。
+選択中の検査プロファイルだけが通常へ切り替わります。
+
 ローカル環境をほかのプロジェクトの gem から隔離するため、`make setup` は gem を `.bundle/gems` へインストールします。
 この隔離によって Ruby 付属 gem が新しいリリースへ置き換わらないよう、Ruby 3.4.5 の[付属 gem 一覧](https://github.com/ruby/ruby/blob/v3_4_5/gems/bundled_gems)も `Gemfile` で同じバージョンに固定しています。
 `Gemfile.lock` は macOS arm64 と Linux x86_64 の両プラットフォームを記録し、チェックサムを含めて依存関係を再現します。
 
-`Brewfile` には macOS で必要な CMake、GCC、GEOS、GNU time、LLVM OpenMP、OpenBLAS、pkg-config、Rust、Z3 を定義しています。
-Debian / Ubuntu 系 Linux では `make setup` が対応する apt パッケージを導入します。
-`torch-rb` 0.21.0 に必要な LibTorch 2.8.0 は、OS と CPU に対応する公式アーカイブを `.cache/libtorch/` へ取得し、固定した SHA-256 と一致することを展開前に検証します。
-セットアップ済みのリポジトリを移動した場合は、もう一度 `make setup` を実行すると Torch と OpenBLAS の拡張を新しい絶対パスに合わせて再ビルドします。
+`Brewfile.core` には通常プロファイル用のGNU time、pkg-config、Rustを定義しています。
+完全プロファイル用の `Brewfile` は、これらにCMake、GCC、GEOS、LLVM OpenMP、OpenBLAS、Z3を加えます。
+Debian / Ubuntu 系 Linuxでも、選択したプロファイルに対応するaptパッケージだけを導入します。
+`torch-rb` 0.21.0 に必要な LibTorch 2.8.0 は `make setup-full` のときだけ取得し、固定した SHA-256 と一致することを展開前に検証します。
+完全プロファイルをセットアップ済みのリポジトリを移動した場合は、もう一度 `make setup-full` を実行すると Torch と OpenBLAS の拡張を新しい絶対パスに合わせて再ビルドします。
 
 Bundler はローカルの依存関係を固定するためだけに使用します。
 `bin/atcoder test`、`run`、`random` は固定した環境で動作しますが、生成される `submission.rb` は `Gemfile` や Bundler を読み込みません。

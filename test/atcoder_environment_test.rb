@@ -2,13 +2,19 @@
 
 require "bundler"
 require "minitest/autorun"
+require "open3"
 require "pathname"
+require "tmpdir"
+
+require_relative "../bin/project_gem_environment"
 
 class AtCoderEnvironmentTest < Minitest::Test
   PROJECT_ROOT = Pathname(__dir__).parent
   GEMFILE = PROJECT_ROOT.join("Gemfile")
   LOCKFILE = PROJECT_ROOT.join("Gemfile.lock")
   BREWFILE = PROJECT_ROOT.join("Brewfile")
+  CORE_BREWFILE = PROJECT_ROOT.join("Brewfile.core")
+  MAKEFILE = PROJECT_ROOT.join("Makefile")
   SETUP = PROJECT_ROOT.join("bin/setup")
   DOCTOR = PROJECT_ROOT.join("bin/doctor")
   GEM_CHECKER = PROJECT_ROOT.join("bin/check-atcoder-gems")
@@ -19,28 +25,44 @@ class AtCoderEnvironmentTest < Minitest::Test
   EXPECTED_RUBY_VERSION = "3.4.5"
   EXPECTED_RUBYGEMS_VERSION = "3.6.9"
   EXPECTED_BUNDLER_VERSION = "2.6.9"
-  EXPECTED_GEMS = {
+  CORE_ATCODER_GEMS = {
     "ac-library-rb" => "1.2.0",
     "bit_utils" => "0.1.2",
     "bitarray" => "1.3.1",
     "fast_trie" => "0.5.1",
     "faster_prime" => "1.0.2",
-    "ffi-geos" => "2.5.0",
     "immutable-ruby" => "0.2.0",
+    "rbtree" => "0.4.6",
+    "rgl" => "0.6.6",
+    "sorted_containers" => "1.1.0",
+    "sorted_set" => "1.0.3"
+  }.freeze
+  OPTIONAL_ATCODER_GEMS = {
+    "ffi-geos" => "2.5.0",
     "lightgbm" => "0.4.3",
     "numo-linalg" => "0.1.7",
     "numo-narray" => "0.9.2.1",
     "numo-openblas" => "0.5.1",
     "or-tools" => "0.16.0",
     "polars-df" => "0.21.1",
-    "rbtree" => "0.4.6",
-    "rgl" => "0.6.6",
     "rumale" => "1.0.0",
-    "sorted_containers" => "1.1.0",
-    "sorted_set" => "1.0.3",
     "torch-rb" => "0.21.0",
     "z3" => "0.0.20230311"
   }.freeze
+  EXPECTED_GEMS = CORE_ATCODER_GEMS.merge(OPTIONAL_ATCODER_GEMS).freeze
+  CORE_SNAPSHOT_GEMS = %w[
+    backports
+    concurrent-ruby
+    function_module
+    pairing_heap
+    stream
+  ].freeze
+  OPTIONAL_SNAPSHOT_GEMS = %w[
+    ffi
+    lbfgsb
+    mmh3
+    rice
+  ].freeze
   RUBY_DISTRIBUTED_TRANSITIVE_GEMS = {
     "bigdecimal" => "3.1.8",
     "csv" => "3.3.2",
@@ -103,6 +125,11 @@ class AtCoderEnvironmentTest < Minitest::Test
     rust
     z3
   ].freeze
+  EXPECTED_CORE_BREW_FORMULAE = %w[
+    gnu-time
+    pkgconf
+    rust
+  ].freeze
 
   def test_ruby_toolchain_matches_atcoder
     assert_equal EXPECTED_RUBY_VERSION, PROJECT_ROOT.join(".ruby-version").read.strip
@@ -111,17 +138,49 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_equal EXPECTED_BUNDLER_VERSION, Bundler::VERSION
   end
 
-  def test_gemfile_exactly_pins_atcoder_direct_gems
+  def test_gemfile_splits_atcoder_direct_gems_into_core_and_optional_groups
     dsl = Bundler::Dsl.evaluate(GEMFILE.to_s, nil, {})
-    atcoder_dependencies = dsl.dependencies.select do |dependency|
+    core_dependencies = dsl.dependencies.select do |dependency|
       dependency.groups.include?(:atcoder)
     end
-    dependencies = atcoder_dependencies.to_h do |dependency|
+    optional_dependencies = dsl.dependencies.select do |dependency|
+      dependency.groups.include?(:atcoder_optional)
+    end
+    core = core_dependencies.to_h do |dependency|
+      [dependency.name, dependency.requirement.to_s.delete_prefix("= ")]
+    end
+    optional = optional_dependencies.to_h do |dependency|
       [dependency.name, dependency.requirement.to_s.delete_prefix("= ")]
     end
 
-    assert_equal EXPECTED_GEMS, dependencies
-    assert atcoder_dependencies.all? { |dependency| dependency.requirement.exact? }
+    assert_equal CORE_ATCODER_GEMS, core
+    assert_equal OPTIONAL_ATCODER_GEMS, optional
+    assert_equal(
+      %i[atcoder_optional atcoder_optional_snapshot],
+      dsl.instance_variable_get(:@optional_groups)
+    )
+    assert_includes GEMFILE.read, "group :atcoder_optional, optional: true"
+    assert(
+      (core_dependencies + optional_dependencies).all? do |dependency|
+        dependency.requirement.exact?
+      end
+    )
+  end
+
+  def test_gemfile_splits_snapshot_pins_with_their_consumers
+    dsl = Bundler::Dsl.evaluate(GEMFILE.to_s, nil, {})
+
+    core = dsl.dependencies.filter_map do |dependency|
+      dependency.name if dependency.groups.include?(:atcoder_snapshot)
+    end
+    optional = dsl.dependencies.filter_map do |dependency|
+      dependency.name if dependency.groups.include?(:atcoder_optional_snapshot)
+    end
+
+    assert_equal CORE_SNAPSHOT_GEMS, core
+    assert_equal OPTIONAL_SNAPSHOT_GEMS, optional
+    assert_includes GEMFILE.read,
+      "group :atcoder_optional_snapshot, optional: true"
   end
 
   def test_gemfile_pins_every_gem_bundled_with_ruby_3_4_5
@@ -181,15 +240,30 @@ class AtCoderEnvironmentTest < Minitest::Test
 
   def test_brewfile_declares_native_gem_dependencies
     formulae = BREWFILE.read.scan(/^brew "([^"]+)"$/).flatten
+    core_formulae = CORE_BREWFILE.read.scan(/^brew "([^"]+)"$/).flatten
 
     assert_equal EXPECTED_BREW_FORMULAE, formulae
+    assert_equal EXPECTED_CORE_BREW_FORMULAE, core_formulae
   end
 
-  def test_setup_installs_native_dependencies_libtorch_and_locked_gems
+  def test_setup_defaults_to_core_and_full_setup_is_explicit
     source = SETUP.read
+    makefile = MAKEFILE.read
 
+    assert_includes makefile, "setup-full:"
+    assert_includes makefile, "./bin/setup --full"
+    assert_includes source, 'profile="core"'
+    assert_includes source, '"--full"'
+    assert_includes source, 'Brewfile.core'
+    assert_includes source, 'Brewfile"'
     assert_includes source,
-      'brew bundle --no-upgrade --file="$project_root/Brewfile"'
+      "atcoder_optional:atcoder_optional_snapshot"
+    assert_includes source, 'config set --local with "$optional_groups"'
+    assert_includes source, "config unset --local with"
+    assert_includes source, 'BUNDLE_WITH="$bundle_with"'
+    assert_includes source, 'BUNDLE_WITHOUT="$bundle_without"'
+    assert_includes source, "config set --local clean false"
+    assert_includes source, 'if [[ "$profile" == "full" ]]'
     assert_includes source, 'libtorch_url="$(atcoder_libtorch_url)"'
     assert_includes source, 'libtorch_sha256="$(atcoder_libtorch_sha256)"'
     assert_includes source, "SHA-256 mismatch"
@@ -204,7 +278,67 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_includes source, '"${bundle_command[@]}" install --jobs 1'
     assert_includes source, "BUNDLE_FROZEN=true"
     assert_includes source, 'path "$project_root/.bundle/gems"'
+    assert_includes source, '.bundle/atcoder-gem-profile'
     refute_includes source, "path.system"
+  end
+
+  def test_setup_rejects_an_unknown_profile_before_installing_anything
+    stdout, stderr, status = Open3.capture3(SETUP.to_s, "--surprise")
+
+    refute_predicate status, :success?
+    assert_equal 2, status.exitstatus
+    assert_empty stdout
+    assert_includes stderr, "usage: bin/setup [--full]"
+  end
+
+  def test_gem_profile_defaults_to_full_for_pre_profile_installations
+    Dir.mktmpdir("atcoder-gem-profile-") do |directory|
+      assert_equal(
+        "full",
+        AtCoderProjectGemEnvironment.profile(Pathname(directory))
+      )
+      assert_equal(
+        "atcoder_optional:atcoder_optional_snapshot",
+        AtCoderProjectGemEnvironment.bundle_with(Pathname(directory))
+      )
+      assert_equal(
+        "",
+        AtCoderProjectGemEnvironment.bundle_without(Pathname(directory))
+      )
+    end
+  end
+
+  def test_gem_profile_reads_core_and_selects_optional_bundler_groups
+    Dir.mktmpdir("atcoder-gem-profile-") do |directory|
+      project_root = Pathname(directory)
+      marker = project_root.join(".bundle/atcoder-gem-profile")
+      marker.parent.mkpath
+      marker.write("core\n")
+
+      assert_equal(
+        "core",
+        AtCoderProjectGemEnvironment.profile(project_root)
+      )
+      assert_equal(
+        "atcoder_optional:atcoder_optional_snapshot",
+        AtCoderProjectGemEnvironment.bundle_without(project_root)
+      )
+      assert_equal "", AtCoderProjectGemEnvironment.bundle_with(project_root)
+    end
+  end
+
+  def test_gem_profile_rejects_an_invalid_marker
+    Dir.mktmpdir("atcoder-gem-profile-") do |directory|
+      project_root = Pathname(directory)
+      marker = project_root.join(".bundle/atcoder-gem-profile")
+      marker.parent.mkpath
+      marker.write("surprise\n")
+
+      error = assert_raises(ArgumentError) do
+        AtCoderProjectGemEnvironment.profile(project_root)
+      end
+      assert_includes error.message, "invalid AtCoder gem profile"
+    end
   end
 
   def test_doctor_checks_locked_and_plain_ruby_gem_environments
@@ -216,6 +350,11 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_includes source, 'bundle_command=(rbenv exec bundle _2.6.9_)'
     assert_includes source, 'check "Locked Ruby gems"'
     assert_includes source, 'check "AtCoder gem versions"'
+    assert_includes source, "BUNDLE_IGNORE_CONFIG=true"
+    assert_includes source, 'BUNDLE_WITH="$bundle_with"'
+    assert_includes source, 'BUNDLE_WITHOUT="$bundle_without"'
+    assert_includes source, "AtCoder optional gem checks"
+    assert_includes source, "make setup-full"
     assert_includes source, 'GEM_HOME="$gem_home"'
     assert_includes source, 'GEM_PATH="$gem_home"'
     assert_includes source, "-u RUBYGEMS_GEMDEPS"
@@ -232,8 +371,14 @@ class AtCoderEnvironmentTest < Minitest::Test
   def test_native_smoke_test_covers_every_atcoder_gem
     source = GEM_SMOKE_TEST.read
     covered_gems = source.scan(/^  "([^"]+)" =>/).flatten
+    core_gems = source
+      .match(/CORE_GEMS = %w\[(.*?)\]\.freeze/m)
+      .captures
+      .fetch(0)
+      .split
 
     assert_equal EXPECTED_GEMS.keys.sort, covered_gems.sort
+    assert_equal CORE_ATCODER_GEMS.keys, core_gems
     assert_includes DOCTOR.read, 'check "AtCoder gem smoke tests"'
     assert_includes source, 'require_relative "project_gem_environment"'
     assert_predicate GEM_SMOKE_TEST, :executable?
@@ -256,7 +401,8 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_includes source, "runs-on: ubuntu-24.04"
     assert_includes source, "actions/cache@v5"
     assert_includes source, 'mkdir -p "$RBENV_ROOT/plugins"'
-    assert_includes source, "./bin/setup"
+    assert_includes source, "run: make setup\n"
+    assert_includes source, "run: make setup-full\n"
     assert_includes source, "make self-test"
   end
 end

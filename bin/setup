@@ -4,7 +4,36 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 source "$project_root/bin/platform"
-unset RUBYGEMS_GEMDEPS
+unset \
+  BUNDLE_APP_CONFIG \
+  BUNDLE_GEMFILE \
+  BUNDLE_IGNORE_CONFIG \
+  BUNDLE_ONLY \
+  BUNDLE_PATH \
+  BUNDLE_WITH \
+  BUNDLE_WITHOUT \
+  RUBYGEMS_GEMDEPS
+
+profile="core"
+if (( $# > 1 )); then
+  echo "usage: bin/setup [--full]" >&2
+  exit 2
+fi
+if [[ "${1:-}" == "--full" ]]; then
+  profile="full"
+elif (( $# == 1 )); then
+  echo "usage: bin/setup [--full]" >&2
+  exit 2
+fi
+
+optional_groups="atcoder_optional:atcoder_optional_snapshot"
+bundle_with=""
+bundle_without=""
+if [[ "$profile" == "core" ]]; then
+  bundle_without="$optional_groups"
+else
+  bundle_with="$optional_groups"
+fi
 
 ruby_version="$(tr -d '[:space:]' < .ruby-version)"
 bundle_command=(rbenv exec bundle _2.6.9_)
@@ -12,6 +41,7 @@ bundle_command=(rbenv exec bundle _2.6.9_)
 install_linux_packages() {
   local -a privilege
   local -a packages
+  local target_profile="$1"
 
   if ! command -v apt-get >/dev/null 2>&1; then
     echo "error: apt-get is required for automatic Linux dependency setup" >&2
@@ -31,34 +61,42 @@ install_linux_packages() {
     autoconf
     bison
     build-essential
-    cmake
     curl
-    gfortran
     libdb-dev
     libffi-dev
     libgdbm-dev
-    libgeos-dev
     libgmp-dev
     libncurses-dev
-    libopenblas0
     libreadline-dev
     libssl-dev
     libyaml-dev
-    libz3-dev
     patch
+    pkg-config
     rustc
     time
-    unzip
     uuid-dev
     zlib1g-dev
   )
+  if [[ "$target_profile" == "full" ]]; then
+    packages+=(
+      cmake
+      gfortran
+      libgeos-dev
+      libopenblas0
+      libz3-dev
+      unzip
+    )
+  fi
 
-  echo "Installing native dependencies with apt..."
+  echo "Installing ${target_profile} native dependencies with apt..."
   "${privilege[@]}" apt-get update
   "${privilege[@]}" apt-get install -y "${packages[@]}"
 }
 
 install_native_dependencies() {
+  local brewfile
+  local target_profile="$1"
+
   case "$(atcoder_os_name)" in
     Darwin)
       if ! command -v brew >/dev/null 2>&1; then
@@ -66,11 +104,15 @@ install_native_dependencies() {
         exit 1
       fi
 
-      echo "Installing native dependencies from Brewfile..."
-      brew bundle --no-upgrade --file="$project_root/Brewfile"
+      brewfile="$project_root/Brewfile.core"
+      if [[ "$target_profile" == "full" ]]; then
+        brewfile="$project_root/Brewfile"
+      fi
+      echo "Installing ${target_profile} native dependencies from ${brewfile##*/}..."
+      brew bundle --no-upgrade --file="$brewfile"
       ;;
     Linux)
-      install_linux_packages
+      install_linux_packages "$target_profile"
       ;;
     *)
       echo "error: unsupported operating system: $(atcoder_os_name)" >&2
@@ -148,7 +190,7 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-install_native_dependencies
+install_native_dependencies "$profile"
 
 if ! gnu_time="$(atcoder_gnu_time_command)"; then
   echo "error: GNU time is unavailable after dependency setup" >&2
@@ -159,7 +201,9 @@ echo "Installing Ruby ${ruby_version} with rbenv..."
 rbenv install -s "$ruby_version"
 export RBENV_VERSION="$ruby_version"
 
-install_libtorch
+if [[ "$profile" == "full" ]]; then
+  install_libtorch
+fi
 
 if command -v nproc >/dev/null 2>&1; then
   available_jobs="$(nproc)"
@@ -175,32 +219,54 @@ if (( build_jobs > available_jobs )); then
   build_jobs="$available_jobs"
 fi
 
-echo "Installing AtCoder Ruby gems from Gemfile.lock..."
+echo "Installing ${profile} AtCoder Ruby gems from Gemfile.lock..."
 "${bundle_command[@]}" config set --local path "$project_root/.bundle/gems"
-"${bundle_command[@]}" config set --local clean true
+if [[ "$profile" == "full" ]]; then
+  "${bundle_command[@]}" config set --local clean true
+else
+  "${bundle_command[@]}" config set --local clean false
+fi
 "${bundle_command[@]}" config set --local disable_shared_gems true
-"${bundle_command[@]}" config set --local \
-  build.torch-rb "--with-torch-dir=$LIBTORCH_DIR"
+if [[ "$profile" == "full" ]]; then
+  "${bundle_command[@]}" config set --local with "$optional_groups"
+else
+  "${bundle_command[@]}" config unset --local with
+fi
+"${bundle_command[@]}" config unset --local without
+"${bundle_command[@]}" config unset --local only
+if [[ "$profile" == "full" ]]; then
+  "${bundle_command[@]}" config set --local \
+    build.torch-rb "--with-torch-dir=$LIBTORCH_DIR"
+fi
 gem_api="$(rbenv exec ruby -rrbconfig -e \
   'print RbConfig::CONFIG.fetch("ruby_version")')"
 gem_home="$project_root/.bundle/gems/ruby/$gem_api"
 workspace_marker="$project_root/.bundle/workspace-path"
 rebuild_path_dependent_gems=false
-if atcoder_workspace_moved \
-  "$workspace_marker" "$project_root" "$gem_home" "$LIBTORCH_DIR"; then
-  rebuild_path_dependent_gems=true
-fi
-if [[ "$rebuild_path_dependent_gems" == true ]]; then
-  echo "Workspace path changed; path-dependent native gems will be rebuilt."
+if [[ "$profile" == "full" ]]; then
+  if atcoder_workspace_moved \
+    "$workspace_marker" "$project_root" "$gem_home" "$LIBTORCH_DIR"; then
+    rebuild_path_dependent_gems=true
+  fi
+  if [[ "$rebuild_path_dependent_gems" == true ]]; then
+    echo "Workspace path changed; path-dependent native gems will be rebuilt."
+  fi
 fi
 
-MAKEFLAGS="-j${build_jobs}" BUNDLE_FROZEN=true \
+MAKEFLAGS="-j${build_jobs}" BUNDLE_FROZEN=true BUNDLE_ONLY="" \
+  BUNDLE_WITH="$bundle_with" \
+  BUNDLE_WITHOUT="$bundle_without" \
   "${bundle_command[@]}" install --jobs 1 --retry 3
-if [[ "$rebuild_path_dependent_gems" == true ]]; then
-  MAKEFLAGS="-j${build_jobs}" BUNDLE_FROZEN=true \
+if [[ "$profile" == "full" && "$rebuild_path_dependent_gems" == true ]]; then
+  MAKEFLAGS="-j${build_jobs}" BUNDLE_FROZEN=true BUNDLE_ONLY="" \
+    BUNDLE_WITH="$bundle_with" \
+    BUNDLE_WITHOUT="$bundle_without" \
     "${bundle_command[@]}" pristine numo-openblas torch-rb
 fi
-printf '%s\n' "$project_root" > "$workspace_marker"
+if [[ "$profile" == "full" ]]; then
+  printf '%s\n' "$project_root" > "$workspace_marker"
+fi
+printf '%s\n' "$profile" > "$project_root/.bundle/atcoder-gem-profile"
 
 export UV_CACHE_DIR="$project_root/.cache/uv"
 echo "Installing oj and aclogin into .venv..."

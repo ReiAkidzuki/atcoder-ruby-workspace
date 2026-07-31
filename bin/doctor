@@ -17,6 +17,21 @@ actual_bundler="$("${ruby_command[@]}" -rbundler -e 'print Bundler::VERSION')"
 gem_api="$("${ruby_command[@]}" -rrbconfig -e \
   'print RbConfig::CONFIG.fetch("ruby_version")')"
 gem_home="$project_root/.bundle/gems/ruby/$gem_api"
+gem_profile="$("${ruby_command[@]}" \
+  -I"$project_root/bin" \
+  -rproject_gem_environment \
+  -e 'print AtCoderProjectGemEnvironment.profile(ARGV.fetch(0))' \
+  "$project_root")"
+bundle_without="$("${ruby_command[@]}" \
+  -I"$project_root/bin" \
+  -rproject_gem_environment \
+  -e 'print AtCoderProjectGemEnvironment.bundle_without(ARGV.fetch(0))' \
+  "$project_root")"
+bundle_with="$("${ruby_command[@]}" \
+  -I"$project_root/bin" \
+  -rproject_gem_environment \
+  -e 'print AtCoderProjectGemEnvironment.bundle_with(ARGV.fetch(0))' \
+  "$project_root")"
 status=0
 
 check() {
@@ -47,6 +62,7 @@ report_version() {
 report_version "Ruby" "$actual_ruby" "$expected_ruby"
 report_version "RubyGems" "$actual_rubygems" "$expected_rubygems"
 report_version "Bundler" "$actual_bundler" "$expected_bundler"
+printf 'ok  AtCoder gem profile %s\n' "$gem_profile"
 
 if [[ "$actual_ruby" == "$expected_ruby" ]]; then
   :
@@ -59,7 +75,15 @@ check "Library loader" "${ruby_command[@]}" -c library.rb
 check "Random generator template" "${ruby_command[@]}" -c template/random/generator.rb
 check "Random oracle template" "${ruby_command[@]}" -c template/random/oracle.rb
 check "Ruby JIT" "${ruby_command[@]}" --jit -e 'abort unless RubyVM::YJIT.enabled?'
-check "Locked Ruby gems" env BUNDLE_FROZEN=true "${bundle_command[@]}" check
+check "Locked Ruby gems" env \
+  BUNDLE_DISABLE_SHARED_GEMS=true \
+  BUNDLE_FROZEN=true \
+  BUNDLE_GEMFILE="$project_root/Gemfile" \
+  BUNDLE_IGNORE_CONFIG=true \
+  BUNDLE_ONLY="" \
+  BUNDLE_PATH="$project_root/.bundle/gems" \
+  BUNDLE_WITH="$bundle_with" BUNDLE_WITHOUT="$bundle_without" \
+  "${bundle_command[@]}" check
 check "AtCoder gem versions" env \
   -u BUNDLE_BIN_PATH -u BUNDLE_GEMFILE -u RUBYLIB -u RUBYOPT \
   -u RUBYGEMS_GEMDEPS \
@@ -72,6 +96,10 @@ check "AtCoder gem smoke tests" env \
   ATCODER_PROJECT_GEM_HOME="$gem_home" \
   GEM_HOME="$gem_home" GEM_PATH="$gem_home" \
   "${ruby_command[@]}" "$project_root/bin/smoke-atcoder-gems"
+if [[ "$gem_profile" == "core" ]]; then
+  printf '%s\n' \
+    'skip AtCoder optional gem checks (run `make setup-full` to select the full profile)'
+fi
 check "online-judge-tools" "$project_root/.venv/bin/oj" --version
 check "aclogin" "$project_root/.venv/bin/aclogin" --help
 check "AtCoder memory-limit parser" "$project_root/.venv/bin/python" -B test/onlinejudge_compat_test.py

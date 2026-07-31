@@ -1,0 +1,4 @@
+# Native tools needed by the default AtCoder workspace and Ruby YJIT on macOS.
+brew "gnu-time"
+brew "pkgconf"
+brew "rust"

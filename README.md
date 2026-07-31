@@ -39,12 +39,22 @@ make doctor
 make self-test
 ```
 
-`make setup` installs Ruby 3.4.5, the gems and native libraries available on AtCoder, online-judge-tools (`oj`), and the AtCoder login helper (`aclogin`).
-Native dependencies on macOS follow `Brewfile`, while Ruby dependencies follow `Gemfile.lock`.
-The first run takes time because it builds the native OpenBLAS, OR-Tools, and Torch extensions.
+`make setup` installs Ruby 3.4.5, the gems and native libraries in the regular profile, online-judge-tools (`oj`), and the AtCoder login helper (`aclogin`).
+The regular `make setup` installs only ten lightweight competitive-programming gems and skips the large numerical, optimization, and machine-learning gems.
+Its native dependencies on macOS follow `Brewfile.core`, while Ruby dependencies follow `Gemfile.lock`.
+
+Install the full profile when you need every nonstandard gem provided by AtCoder:
+
+```sh
+make setup-full
+```
+
+`make setup-full` follows the complete `Brewfile` and adds OpenBLAS, OR-Tools, Polars, Torch, and the other optional gems.
+Its first run takes time because it downloads LibTorch and builds native extensions.
 Native compilation is generally configured to use two parallel jobs.
-Override it with a command such as `ATCODER_BUILD_JOBS=4 make setup` if appropriate, although a few gems such as `numo-openblas` select the available CPU count themselves.
-`make doctor` checks Ruby, Bundler, the pinned gems, native libraries, and the AtCoder commands.
+Override it with a command such as `ATCODER_BUILD_JOBS=4 make setup-full` if appropriate, although a few gems such as `numo-openblas` select the available CPU count themselves.
+`make doctor` checks Ruby, Bundler, the pinned gems, native libraries, and the AtCoder commands for the selected profile.
+Under the core profile it reports optional gem checks as `skip`.
 When every item it reports is `ok`, the local environment is ready.
 `make self-test` runs the workspace's regression tests in a temporary directory without making network requests.
 
@@ -67,14 +77,24 @@ It uses RubyGems 3.6.9 and Bundler 2.6.9 as shipped with Ruby 3.4.5, and `Gemfil
 | `sorted_containers` | 1.1.0 | `sorted_set` | 1.0.3 |
 | `torch-rb` | 0.21.0 | `z3` | 0.0.20230311 |
 
+There are two installation profiles:
+
+- Regular `make setup`: `ac-library-rb`, `bit_utils`, `bitarray`, `fast_trie`, `faster_prime`, `immutable-ruby`, `rbtree`, `rgl`, `sorted_containers`, and `sorted_set`
+- `make setup-full`: all of the above plus `ffi-geos`, `lightgbm`, `numo-linalg`, `numo-narray`, `numo-openblas`, `or-tools`, `polars-df`, `rumale`, `torch-rb`, and `z3`
+
+Run `make setup-full` before using a gem from the second list in a solution.
+Running `make setup` after a full installation does not delete downloaded optional gems, avoiding another lengthy build if you switch back.
+It only changes the selected validation profile to core.
+
 To isolate this workspace from gems installed by other projects, `make setup` installs gems under `.bundle/gems`.
 The [gems bundled with Ruby 3.4.5](https://github.com/ruby/ruby/blob/v3_4_5/gems/bundled_gems) are pinned to their distribution versions as well, preventing Bundler from replacing them with newer releases.
 `Gemfile.lock` records both macOS arm64 and Linux x86_64 platforms and includes checksums for reproducible dependency resolution.
 
-`Brewfile` defines CMake, GCC, GEOS, GNU time, LLVM OpenMP, OpenBLAS, pkg-config, Rust, and Z3 for macOS.
-On Debian/Ubuntu-based Linux, `make setup` installs the corresponding apt packages.
-It also downloads the official LibTorch 2.8.0 archive for the current OS and CPU into `.cache/libtorch/`, as required by `torch-rb` 0.21.0, and verifies its pinned SHA-256 before extraction.
-After moving an already configured repository, run `make setup` again so the Torch and OpenBLAS extensions are rebuilt for the new absolute path.
+`Brewfile.core` defines GNU time, pkg-config, and Rust for the regular macOS profile.
+The full `Brewfile` adds CMake, GCC, GEOS, LLVM OpenMP, OpenBLAS, and Z3.
+On Debian/Ubuntu-based Linux, setup likewise installs only the apt packages required by the selected profile.
+`make setup-full` downloads the official LibTorch 2.8.0 archive for the current OS and CPU into `.cache/libtorch/`, as required by `torch-rb` 0.21.0, and verifies its pinned SHA-256 before extraction.
+After moving a repository configured with the full profile, run `make setup-full` again so the Torch and OpenBLAS extensions are rebuilt for the new absolute path.
 
 Bundler is used only to pin the local dependency environment.
 The `test`, `run`, and `random` commands use that pinned environment, but the generated `submission.rb` does not load `Gemfile` or Bundler.

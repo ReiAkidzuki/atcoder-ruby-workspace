@@ -15,6 +15,19 @@ module AtCoderGemSmoke
   end
 end
 
+CORE_GEMS = %w[
+  ac-library-rb
+  bit_utils
+  bitarray
+  fast_trie
+  faster_prime
+  immutable-ruby
+  rbtree
+  rgl
+  sorted_containers
+  sorted_set
+].freeze
+
 SMOKE_TESTS = {
   "ac-library-rb" => lambda {
     require "ac-library-rb/dsu"
@@ -151,7 +164,16 @@ if ARGV.first == "--child"
   exit 0
 end
 
-failures = SMOKE_TESTS.filter_map do |name, _test|
+project_root = File.expand_path("..", __dir__)
+profile = AtCoderProjectGemEnvironment.profile(project_root)
+selected_tests =
+  if profile == AtCoderProjectGemEnvironment::FULL_PROFILE
+    SMOKE_TESTS
+  else
+    SMOKE_TESTS.select { |name, _test| CORE_GEMS.include?(name) }
+  end
+
+failures = selected_tests.filter_map do |name, _test|
   if system(RbConfig.ruby, __FILE__, "--child", name)
     puts "ok  #{name}"
     next

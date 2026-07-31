@@ -10,19 +10,24 @@ group :atcoder do
   gem "bitarray", "= 1.3.1", require: false
   gem "fast_trie", "= 0.5.1", require: false
   gem "faster_prime", "= 1.0.2", require: false
-  gem "ffi-geos", "= 2.5.0", require: false
   gem "immutable-ruby", "= 0.2.0", require: false
+  gem "rbtree", "= 0.4.6", require: false
+  gem "rgl", "= 0.6.6", require: false
+  gem "sorted_containers", "= 1.1.0", require: false
+  gem "sorted_set", "= 1.0.3", require: false
+end
+
+# Large numerical, optimization, data-processing, and machine-learning gems.
+# `make setup-full` installs this group; the default setup skips it.
+group :atcoder_optional, optional: true do
+  gem "ffi-geos", "= 2.5.0", require: false
   gem "lightgbm", "= 0.4.3", require: false
   gem "numo-linalg", "= 0.1.7", require: false
   gem "numo-narray", "= 0.9.2.1", require: false
   gem "numo-openblas", "= 0.5.1", require: false
   gem "or-tools", "= 0.16.0", require: false
   gem "polars-df", "= 0.21.1", require: false
-  gem "rbtree", "= 0.4.6", require: false
-  gem "rgl", "= 0.6.6", require: false
   gem "rumale", "= 1.0.0", require: false
-  gem "sorted_containers", "= 1.1.0", require: false
-  gem "sorted_set", "= 1.0.3", require: false
   gem "torch-rb", "= 0.21.0", require: false
   gem "z3", "= 0.0.20230311", require: false
 end
@@ -97,11 +102,16 @@ end
 group :atcoder_snapshot do
   gem "backports", "= 3.25.2", require: false
   gem "concurrent-ruby", "= 1.3.5", require: false
-  gem "ffi", "= 1.17.2", require: false
   gem "function_module", "= 0.1.1", require: false
+  gem "pairing_heap", "= 3.1.0", require: false
+  gem "stream", "= 0.5.5", require: false
+end
+
+# Snapshot pins used exclusively by the optional AtCoder gems. Keeping them in
+# the skipped group prevents native dependencies from leaking into core setup.
+group :atcoder_optional_snapshot, optional: true do
+  gem "ffi", "= 1.17.2", require: false
   gem "lbfgsb", "= 0.6.0", require: false
   gem "mmh3", "= 1.2.0", require: false
-  gem "pairing_heap", "= 3.1.0", require: false
   gem "rice", "= 4.6.1", require: false
-  gem "stream", "= 0.5.5", require: false
 end
