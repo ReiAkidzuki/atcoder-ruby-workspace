@@ -1,0 +1,164 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "project_gem_environment"
+
+AtCoderProjectGemEnvironment.activate!(__FILE__, ARGV)
+
+require "rbconfig"
+
+module AtCoderGemSmoke
+  module_function
+
+  def assert(condition, message)
+    raise message unless condition
+  end
+end
+
+SMOKE_TESTS = {
+  "ac-library-rb" => lambda {
+    require "ac-library-rb/dsu"
+    dsu = AcLibraryRb::DSU.new(3)
+    dsu.merge(0, 1)
+    AtCoderGemSmoke.assert(dsu.same?(0, 1), "DSU merge failed")
+  },
+  "bit_utils" => lambda {
+    require "bit_utils"
+    AtCoderGemSmoke.assert(
+      BitUtils.popcount(0b101101) == 4,
+      "BitUtils popcount failed"
+    )
+  },
+  "bitarray" => lambda {
+    require "bitarray"
+    bits = BitArray.new(8)
+    bits[3] = 1
+    AtCoderGemSmoke.assert(
+      bits[3] == 1 && bits.total_set == 1,
+      "BitArray set/get failed"
+    )
+  },
+  "fast_trie" => lambda {
+    require "trie"
+    trie = Trie.new
+    trie.add("ruby", 34)
+    AtCoderGemSmoke.assert(trie.get("ruby") == 34, "Trie lookup failed")
+  },
+  "faster_prime" => lambda {
+    require "faster_prime"
+    AtCoderGemSmoke.assert(
+      FasterPrime.prime?(97),
+      "FasterPrime primality test failed"
+    )
+  },
+  "ffi-geos" => lambda {
+    require "ffi-geos"
+    AtCoderGemSmoke.assert(
+      Geos::FFIGeos.geos_library_path,
+      "GEOS shared library was not found"
+    )
+  },
+  "immutable-ruby" => lambda {
+    require "immutable"
+    vector = Immutable::Vector[1, 2].add(3)
+    AtCoderGemSmoke.assert(
+      vector.to_a == [1, 2, 3],
+      "Immutable::Vector update failed"
+    )
+  },
+  "lightgbm" => lambda {
+    require "lightgbm"
+    LightGBM::FFI
+    AtCoderGemSmoke.assert(defined?(LightGBM::FFI), "LightGBM FFI failed to load")
+  },
+  "numo-linalg" => lambda {
+    require "numo/openblas"
+    matrix = Numo::DFloat[[1, 2], [3, 4]]
+    product = matrix.dot(Numo::DFloat[1, 1])
+    AtCoderGemSmoke.assert(product.to_a == [3.0, 7.0], "BLAS multiplication failed")
+  },
+  "numo-narray" => lambda {
+    require "numo/narray"
+    array = Numo::Int32[1, 2, 3]
+    AtCoderGemSmoke.assert(array.sum == 6, "Numo::NArray sum failed")
+  },
+  "numo-openblas" => lambda {
+    require "numo/openblas"
+    AtCoderGemSmoke.assert(
+      defined?(Numo::OpenBLAS::OPENBLAS_VERSION),
+      "Numo::OpenBLAS failed to load"
+    )
+  },
+  "or-tools" => lambda {
+    require "or-tools"
+    AtCoderGemSmoke.assert(
+      ORTools::CpModel.new,
+      "OR-Tools CP-SAT model failed to initialize"
+    )
+  },
+  "polars-df" => lambda {
+    require "polars-df"
+    frame = Polars::DataFrame.new({ "value" => [1, 2] })
+    AtCoderGemSmoke.assert(frame.height == 2, "Polars DataFrame failed")
+  },
+  "rbtree" => lambda {
+    require "rbtree"
+    tree = RBTree["b", 2, "a", 1]
+    AtCoderGemSmoke.assert(tree.keys == %w[a b], "RBTree ordering failed")
+  },
+  "rgl" => lambda {
+    require "rgl/adjacency"
+    graph = RGL::AdjacencyGraph.new
+    graph.add_edge(1, 2)
+    AtCoderGemSmoke.assert(graph.has_edge?(1, 2), "RGL edge lookup failed")
+  },
+  "rumale" => lambda {
+    require "rumale"
+    samples = Numo::DFloat[[0], [1], [2]]
+    targets = Numo::DFloat[1, 3, 5]
+    model = Rumale::LinearModel::LinearRegression.new.fit(samples, targets)
+    prediction = model.predict(Numo::DFloat[[3]])[0]
+    AtCoderGemSmoke.assert(
+      (prediction - 7).abs < 0.001,
+      "Rumale linear regression failed"
+    )
+  },
+  "sorted_containers" => lambda {
+    require "sorted_containers"
+    array = SortedContainers::SortedArray.new([3, 1, 2])
+    AtCoderGemSmoke.assert(array.to_a == [1, 2, 3], "SortedArray ordering failed")
+  },
+  "sorted_set" => lambda {
+    require "sorted_set"
+    set = SortedSet.new([3, 1, 2])
+    AtCoderGemSmoke.assert(set.to_a == [1, 2, 3], "SortedSet ordering failed")
+  },
+  "torch-rb" => lambda {
+    require "torch"
+    tensor = Torch.tensor([1, 2]) + 1
+    AtCoderGemSmoke.assert(tensor.to_a == [2, 3], "Torch tensor operation failed")
+  },
+  "z3" => lambda {
+    require "z3"
+    solver = Z3::Solver.new
+    AtCoderGemSmoke.assert(solver, "Z3 solver failed to initialize")
+  }
+}.freeze
+
+if ARGV.first == "--child"
+  name = ARGV.fetch(1)
+  SMOKE_TESTS.fetch(name).call
+  exit 0
+end
+
+failures = SMOKE_TESTS.filter_map do |name, _test|
+  if system(RbConfig.ruby, __FILE__, "--child", name)
+    puts "ok  #{name}"
+    next
+  end
+
+  warn "ng  #{name}"
+  name
+end
+
+exit(failures.empty? ? 0 : 1)

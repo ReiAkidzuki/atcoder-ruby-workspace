@@ -1,7 +1,101 @@
 #!/usr/bin/env bash
 
+ATCODER_LIBTORCH_VERSION="2.8.0"
+
 atcoder_os_name() {
   printf '%s\n' "${ATCODER_OS:-$(uname -s)}"
+}
+
+atcoder_arch_name() {
+  printf '%s\n' "${ATCODER_ARCH:-$(uname -m)}"
+}
+
+atcoder_libtorch_url() {
+  local os_name
+  local architecture
+
+  os_name="$(atcoder_os_name)"
+  architecture="$(atcoder_arch_name)"
+
+  case "${os_name}/${architecture}" in
+    Darwin/arm64)
+      printf '%s\n' \
+        "https://download.pytorch.org/libtorch/cpu/libtorch-macos-arm64-${ATCODER_LIBTORCH_VERSION}.zip"
+      ;;
+    Linux/x86_64)
+      printf '%s\n' \
+        "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-${ATCODER_LIBTORCH_VERSION}%2Bcpu.zip"
+      ;;
+    *)
+      printf 'error: unsupported LibTorch platform: %s/%s\n' \
+        "$os_name" "$architecture" >&2
+      return 1
+      ;;
+  esac
+}
+
+atcoder_libtorch_sha256() {
+  local os_name
+  local architecture
+
+  os_name="$(atcoder_os_name)"
+  architecture="$(atcoder_arch_name)"
+
+  case "${os_name}/${architecture}" in
+    Darwin/arm64)
+      printf '%s\n' \
+        "be0642231d2008c7b90071fc0898d82a0c002d47f38350ebf3ed779fc01972d7"
+      ;;
+    Linux/x86_64)
+      printf '%s\n' \
+        "8dea5bcfed4b53ca0f6852517bea4b4d1f3ff1cc0c21da662e834d34af1ec824"
+      ;;
+    *)
+      printf 'error: unsupported LibTorch platform: %s/%s\n' \
+        "$os_name" "$architecture" >&2
+      return 1
+      ;;
+  esac
+}
+
+atcoder_sha256_file() {
+  local path="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{ print $1 }'
+  else
+    echo "error: sha256sum or shasum is required" >&2
+    return 1
+  fi
+}
+
+atcoder_torch_needs_rebuild() {
+  local build_info
+  local expected
+  local gem_home="$1"
+  local libtorch_dir="$2"
+
+  build_info="$gem_home/build_info/torch-rb-0.21.0.info"
+  [[ -f "$build_info" ]] || return 1
+
+  expected="--with-torch-dir=$libtorch_dir"
+  [[ "$(tr -d '\r\n' < "$build_info")" != "$expected" ]]
+}
+
+atcoder_workspace_moved() {
+  local marker="$1"
+  local project_root="$2"
+  local gem_home="$3"
+  local libtorch_dir="$4"
+
+  if [[ -f "$marker" ]]; then
+    [[ "$(tr -d '\r\n' < "$marker")" != "$project_root" ]]
+    return
+  fi
+
+  atcoder_torch_needs_rebuild "$gem_home" "$libtorch_dir"
 }
 
 atcoder_gnu_time_command() {

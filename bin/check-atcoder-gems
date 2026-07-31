@@ -1,0 +1,47 @@
+#!/usr/bin/env -S rbenv exec ruby
+# frozen_string_literal: true
+
+require_relative "project_gem_environment"
+
+AtCoderProjectGemEnvironment.activate!(__FILE__, ARGV)
+
+require "bundler"
+require "pathname"
+
+project_root = Pathname(__dir__).parent.expand_path
+gemfile = project_root.join("Gemfile")
+dsl = Bundler::Dsl.evaluate(gemfile.to_s, nil, {})
+dependencies = dsl.dependencies.select do |dependency|
+  (
+    dependency.groups &
+    %i[
+      atcoder
+      atcoder_snapshot
+      ruby_bundled
+      ruby_default_dependencies
+    ]
+  ).any?
+end
+
+failures = dependencies.filter_map do |dependency|
+  expected = dependency.requirement.requirements.fetch(0).fetch(1)
+  installed = Gem::Specification
+    .find_all_by_name(dependency.name)
+    .max_by(&:version)
+
+  if installed.nil?
+    "#{dependency.name}: missing (expected #{expected})"
+  elsif installed.version != expected
+    "#{dependency.name}: #{installed.version} (expected #{expected})"
+  end
+end
+
+if failures.empty?
+  atcoder_count = dependencies.count { |dependency| dependency.groups.include?(:atcoder) }
+  puts "#{atcoder_count} AtCoder gems and " \
+    "#{dependencies.length - atcoder_count} declared Ruby environment gems match Gemfile"
+  exit 0
+end
+
+failures.each { |failure| warn failure }
+exit 1

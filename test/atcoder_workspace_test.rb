@@ -19,6 +19,10 @@ class AtCoderWorkspaceTest < Minitest::Test
     @problem = @sandbox.join("contest/a")
     @problem.mkpath
     FileUtils.cp(PROJECT_ROOT.join("bin/atcoder"), @sandbox.join("bin/atcoder"))
+    FileUtils.cp(
+      PROJECT_ROOT.join("bin/project_gem_environment.rb"),
+      @sandbox.join("bin/project_gem_environment.rb")
+    )
   end
 
   def teardown
@@ -246,6 +250,68 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_empty temporary_bundles
   end
 
+  def test_run_uses_the_project_bundle
+    install_test_bundle
+    write_main(<<~RUBY)
+      require "workspace_probe"
+
+      puts WorkspaceProbe::VALUE
+    RUBY
+
+    stdout, stderr, status = atcoder("run", "contest/a")
+
+    assert_predicate status, :success?, stderr
+    assert_equal "11\n", stdout.lines.last
+  end
+
+  def test_run_rejects_an_incomplete_project_bundle
+    gem_home = @sandbox.join(
+      ".bundle/gems/ruby",
+      RbConfig::CONFIG.fetch("ruby_version")
+    )
+    gem_home.mkpath
+    @sandbox.join("Gemfile").write(<<~RUBY)
+      source "https://rubygems.org"
+
+      gem "workspace-probe", "= 0.1.0"
+    RUBY
+    @sandbox.join("Gemfile.lock").write(<<~LOCK)
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          workspace-probe (0.1.0)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        workspace-probe (= 0.1.0)
+
+      BUNDLED WITH
+         #{Gem::Specification.find_by_name("bundler").version}
+    LOCK
+    write_main('puts "must not run"')
+
+    stdout, stderr, status = atcoder("run", "contest/a")
+
+    refute_predicate status, :success?
+    refute_includes stdout, "must not run"
+    assert_includes stderr, "make setup"
+  end
+
+  def test_project_gem_environment_is_activated_before_prism_is_loaded
+    source = @sandbox.join("bin/atcoder").read
+    helper = @sandbox.join("bin/project_gem_environment.rb").read
+
+    assert_operator(
+      source.index("AtCoderProjectGemEnvironment.activate!"),
+      :<,
+      source.index('require "prism"')
+    )
+    assert_includes helper, "exec("
+    assert_includes helper, '"= 2.6.9"'
+  end
+
   def test_random_bundles_only_the_candidate
     write_library("offset.rb", <<~RUBY)
       # frozen_string_literal: true
@@ -278,6 +344,55 @@ class AtCoderWorkspaceTest < Minitest::Test
     assert_predicate status, :success?, stderr
     assert_includes stdout, "PASS: 3 random cases"
     assert_empty temporary_bundles
+  end
+
+  def test_random_uses_the_project_bundle_for_every_ruby_process
+    install_test_bundle
+    write_main(<<~RUBY)
+      require "workspace_probe"
+
+      puts Integer($stdin.read) + WorkspaceProbe::VALUE
+    RUBY
+    write_problem_file("random/generator.rb", <<~RUBY)
+      require "workspace_probe"
+
+      puts Integer(ARGV.fetch(0)) + WorkspaceProbe::VALUE
+    RUBY
+    write_problem_file("random/oracle.rb", <<~RUBY)
+      require "workspace_probe"
+
+      puts Integer($stdin.read) + WorkspaceProbe::VALUE
+    RUBY
+
+    stdout, stderr, status = atcoder("random", "contest/a", "2", "3")
+
+    assert_predicate status, :success?, stderr
+    assert_includes stdout, "PASS: 2 random cases"
+  end
+
+  def test_samples_use_the_project_bundle
+    install_test_bundle
+    install_fake_oj
+    write_main(<<~RUBY)
+      require "workspace_probe"
+
+      puts Integer($stdin.read) + WorkspaceProbe::VALUE
+    RUBY
+    write_problem_file("test/sample-1.in", "1\n")
+    write_problem_file("test/sample-1.out", "12\n")
+
+    stdout, stderr, status = atcoder(
+      "test",
+      "contest/a",
+      env: { "FAKE_OJ_LOG" => @sandbox.join("oj.log").to_s }
+    )
+
+    assert_predicate status, :success?, "#{stdout}\n#{stderr}"
+    record = JSON.parse(@sandbox.join("oj.log").each_line.first)
+    command = record.fetch("argv").fetch(
+      record.fetch("argv").index("-c") + 1
+    )
+    refute_includes command, "bundle exec"
   end
 
   def test_submit_tests_and_prepares_the_same_snapshot_for_browser
@@ -669,6 +784,62 @@ class AtCoderWorkspaceTest < Minitest::Test
       end
     RUBY
     path.chmod(0o755)
+  end
+
+  def install_test_bundle
+    gem_root = @sandbox.join("workspace-probe")
+    gem_root.join("lib").mkpath
+    gem_root.join("lib/workspace_probe.rb").write(<<~RUBY)
+      module WorkspaceProbe
+        VALUE = 11
+      end
+    RUBY
+    gemspec = <<~RUBY
+      Gem::Specification.new do |specification|
+        specification.name = "workspace-probe"
+        specification.version = "0.1.0"
+        specification.summary = "Test-only local dependency"
+        specification.authors = ["AtCoder workspace"]
+        specification.files = ["lib/workspace_probe.rb"]
+        specification.require_paths = ["lib"]
+      end
+    RUBY
+    gem_root.join("workspace-probe.gemspec").write(gemspec)
+
+    gem_home = @sandbox.join(
+      ".bundle/gems/ruby",
+      RbConfig::CONFIG.fetch("ruby_version")
+    )
+    installed_gem = gem_home.join("gems/workspace-probe-0.1.0")
+    installed_gem.parent.mkpath
+    FileUtils.cp_r(gem_root, installed_gem)
+    gem_home.join("specifications").mkpath
+    gem_home.join("specifications/workspace-probe-0.1.0.gemspec").write(gemspec)
+
+    @sandbox.join("Gemfile").write(<<~RUBY)
+      source "https://rubygems.org"
+
+      gem "workspace-probe", path: "workspace-probe"
+    RUBY
+    @sandbox.join("Gemfile.lock").write(<<~LOCK)
+      PATH
+        remote: workspace-probe
+        specs:
+          workspace-probe (0.1.0)
+
+      GEM
+        remote: https://rubygems.org/
+        specs:
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        workspace-probe!
+
+      BUNDLED WITH
+         #{Gem::Specification.find_by_name("bundler").version}
+    LOCK
   end
 
   def install_fake_command(name, source)

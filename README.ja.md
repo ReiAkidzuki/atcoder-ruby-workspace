@@ -15,8 +15,8 @@ Cookie はリポジトリへ保存されないため、提出に使う端末ご�
 
 ## 導入
 
-この環境は macOS と Linux に対応しています。
-Windows では WSL を使用してください。
+この環境は Apple Silicon Mac と Debian / Ubuntu 系の x86_64 Linux に対応しています。
+Windows では Ubuntu の WSL を使用してください。
 
 事前に [rbenv](https://github.com/rbenv/rbenv)、[ruby-build](https://github.com/rbenv/ruby-build)、[uv](https://docs.astral.sh/uv/getting-started/installation/) をインストールします。
 macOS では Homebrew を使って次のように導入できます。
@@ -28,7 +28,7 @@ rbenv init
 
 `rbenv init` の実行後は、表示に従ってターミナルを開き直します。
 
-Linux では [ruby-build が案内するビルド環境](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment)を準備し、GNU time の `time` パッケージもインストールしてください。
+Debian / Ubuntu 系 Linux では [ruby-build が案内するビルド環境](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment)を準備し、GNU time の `time` パッケージもインストールしてください。
 その後、rbenv と uv の公式手順に従って導入し、`rbenv init` を実行します。
 
 リポジトリを clone したら、次のコマンドを実行します。
@@ -39,10 +39,46 @@ make doctor
 make self-test
 ```
 
-`make setup` は Ruby 3.4.5、online-judge-tools (`oj`)、AtCoder のログイン補助 (`aclogin`) をインストールします。
-macOS で GNU time が不足している場合は、Homebrew から併せてインストールします。
-`make doctor` がすべて `ok` なら、ローカル実行環境の準備は完了です。
+`make setup` は Ruby 3.4.5、AtCoder で利用できる gem とネイティブライブラリ、online-judge-tools (`oj`)、AtCoder のログイン補助 (`aclogin`) をインストールします。
+macOS のネイティブ依存関係は `Brewfile`、Ruby の依存関係は `Gemfile.lock` に従います。
+初回は OpenBLAS、OR-Tools、Torch のネイティブ拡張をビルドするため、完了まで時間がかかります。
+ネイティブ拡張のビルドには原則として2並列を指定します。
+必要なら `ATCODER_BUILD_JOBS=4 make setup` のように変更できますが、`numo-openblas` など一部の gem は独自に利用可能な CPU 数を選びます。
+`make doctor` は Ruby、Bundler、固定した gem、ネイティブライブラリ、AtCoder 用コマンドを検査します。
+すべて `ok` なら、ローカル実行環境の準備は完了です。
 `make self-test` は、ネットワークへ接続せず、一時ディレクトリ内でこの作業環境自体の回帰テストを実行します。
+
+## AtCoder Ruby 3.4.5 環境
+
+このリポジトリは、AtCoder の[使用可能言語・ライブラリ一覧](https://img.atcoder.jp/file/language-update/2025-10/language-list.html)と [Ruby 環境の公式設定](https://img.atcoder.jp/file/language-update/2025-10/087-3-3_ruby-3-3-6.toml)を基準にしています。
+公式設定 URL のファイル名は旧版由来ですが、設定本文は Ruby 3.4.5 を指定しています。
+Ruby 3.4.5 に付属する RubyGems 3.6.9 と Bundler 2.6.9 を使用し、AtCoder が直接指定している次の20個の非標準 gem を `Gemfile` で固定しています。
+
+| gem | バージョン | gem | バージョン |
+| --- | --- | --- | --- |
+| `ac-library-rb` | 1.2.0 | `bit_utils` | 0.1.2 |
+| `bitarray` | 1.3.1 | `fast_trie` | 0.5.1 |
+| `faster_prime` | 1.0.2 | `ffi-geos` | 2.5.0 |
+| `immutable-ruby` | 0.2.0 | `lightgbm` | 0.4.3 |
+| `numo-linalg` | 0.1.7 | `numo-narray` | 0.9.2.1 |
+| `numo-openblas` | 0.5.1 | `or-tools` | 0.16.0 |
+| `polars-df` | 0.21.1 | `rbtree` | 0.4.6 |
+| `rgl` | 0.6.6 | `rumale` | 1.0.0 |
+| `sorted_containers` | 1.1.0 | `sorted_set` | 1.0.3 |
+| `torch-rb` | 0.21.0 | `z3` | 0.0.20230311 |
+
+ローカル環境をほかのプロジェクトの gem から隔離するため、`make setup` は gem を `.bundle/gems` へインストールします。
+この隔離によって Ruby 付属 gem が新しいリリースへ置き換わらないよう、Ruby 3.4.5 の[付属 gem 一覧](https://github.com/ruby/ruby/blob/v3_4_5/gems/bundled_gems)も `Gemfile` で同じバージョンに固定しています。
+`Gemfile.lock` は macOS arm64 と Linux x86_64 の両プラットフォームを記録し、チェックサムを含めて依存関係を再現します。
+
+`Brewfile` には macOS で必要な CMake、GCC、GEOS、GNU time、LLVM OpenMP、OpenBLAS、pkg-config、Rust、Z3 を定義しています。
+Debian / Ubuntu 系 Linux では `make setup` が対応する apt パッケージを導入します。
+`torch-rb` 0.21.0 に必要な LibTorch 2.8.0 は、OS と CPU に対応する公式アーカイブを `.cache/libtorch/` へ取得し、固定した SHA-256 と一致することを展開前に検証します。
+セットアップ済みのリポジトリを移動した場合は、もう一度 `make setup` を実行すると Torch と OpenBLAS の拡張を新しい絶対パスに合わせて再ビルドします。
+
+Bundler はローカルの依存関係を固定するためだけに使用します。
+`bin/atcoder test`、`run`、`random` は固定した環境で動作しますが、生成される `submission.rb` は `Gemfile` や Bundler を読み込みません。
+AtCoder では、提出コードが公式設定どおり通常の `ruby --jit Main.rb` で実行されます。
 
 ## ブラウザでのログインと任意の `oj` Cookie
 
@@ -290,14 +326,17 @@ make self-test
 テストでは独立した一時ディレクトリと外部コマンドの代替実装を使うため、問題ファイルを変更せず、ログインやネットワーク接続も必要としません。
 ライブラリ順序、自動合成、手動 `bundle`、ランダムテスト、ブラウザ提出用スナップショット、クリップボード・ブラウザへの引き継ぎ、上書き保護、ソース検査、ログインツール検出、OS 別コマンド選択を確認します。
 GitHub Actions では、macOS と Ubuntu の両方で同じセルフテストとインストール済みの AtCoder パーサーの互換性検査を実行します。
+さらに、手動実行と毎月の定期実行に対応した Ubuntu x86_64 の環境スモークテストで、Ruby の導入、全 gem のネイティブビルド、LibTorch、全20個の非標準 gem の最小動作まで検証します。
 
 ## AtCoder との差
 
 - Ruby は AtCoder と同じ 3.4.5 に固定しています。
 - 構文確認は `ruby -c`、サンプル実行は `ruby --jit` です。
+- AtCoder が直接指定している非標準 gem は同じバージョンに固定しています。
+- AtCoder は間接依存 gem のバージョンを公開していません。`Gemfile.lock` は 2025-10 環境の公開時点で互換性のある依存関係を固定していますが、審査環境の間接依存と完全に同じであることまでは保証できません。
+- macOS arm64 では Homebrew のネイティブライブラリと macOS 用 LibTorch を使用します。AtCoder の Linux x86_64 環境とは OS、CPU、ネイティブライブラリのビルドが異なるため、実行時間、メモリ使用量、浮動小数点演算の細部は一致しない場合があります。
 - AtCoder API クライアントは、`MiB` と `KiB` のメモリ制限に対応したリリースが出るまで、[上流へ提案中のパーサー修正](https://github.com/online-judge-tools/api-client/pull/175)の特定コミットへ固定しています。
-- AtCoder 本番とローカル環境では、実行時間やメモリ使用量が完全には一致しません。
-- 深い再帰を使う場合、必要に応じて問題のメモリ制限に合わせた `RUBY_THREAD_VM_STACK_SIZE` を設定してください。
+- AtCoder は問題のメモリ制限に合わせて `RUBY_THREAD_VM_STACK_SIZE={memory:b}` を設定します。ローカルでは問題ごとの値を自動設定しないため、深い再帰を使う場合は同じ値を明示してください。
 - AtCoder にない gem を使った解答は提出先で動きません。標準ライブラリ中心を推奨します。
 
 現行言語環境の詳細は [AtCoder の使用可能言語・ライブラリ一覧](https://img.atcoder.jp/file/language-update/2025-10/language-list.html)を参照してください。

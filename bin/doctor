@@ -4,10 +4,19 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 source "$project_root/bin/platform"
+unset RUBYGEMS_GEMDEPS
 
 expected_ruby="$(tr -d '[:space:]' < .ruby-version)"
+expected_rubygems="3.6.9"
+expected_bundler="2.6.9"
 ruby_command=(rbenv exec ruby)
+bundle_command=(rbenv exec bundle _2.6.9_)
 actual_ruby="$("${ruby_command[@]}" -e 'print RUBY_VERSION')"
+actual_rubygems="$("${ruby_command[@]}" -e 'print Gem::VERSION')"
+actual_bundler="$("${ruby_command[@]}" -rbundler -e 'print Bundler::VERSION')"
+gem_api="$("${ruby_command[@]}" -rrbconfig -e \
+  'print RbConfig::CONFIG.fetch("ruby_version")')"
+gem_home="$project_root/.bundle/gems/ruby/$gem_api"
 status=0
 
 check() {
@@ -22,11 +31,27 @@ check() {
   fi
 }
 
+report_version() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+
+  if [[ "$actual" == "$expected" ]]; then
+    printf 'ok  %s %s\n' "$label" "$actual"
+  else
+    printf 'ng  %s %s (expected %s)\n' "$label" "$actual" "$expected"
+    status=1
+  fi
+}
+
+report_version "Ruby" "$actual_ruby" "$expected_ruby"
+report_version "RubyGems" "$actual_rubygems" "$expected_rubygems"
+report_version "Bundler" "$actual_bundler" "$expected_bundler"
+
 if [[ "$actual_ruby" == "$expected_ruby" ]]; then
-  printf 'ok  Ruby %s\n' "$actual_ruby"
+  :
 else
-  printf 'ng  Ruby %s (expected %s)\n' "$actual_ruby" "$expected_ruby"
-  status=1
+  printf '    Run: rbenv install -s %s\n' "$expected_ruby"
 fi
 
 check "Ruby syntax check" "${ruby_command[@]}" -c template/main.rb
@@ -34,6 +59,19 @@ check "Library loader" "${ruby_command[@]}" -c library.rb
 check "Random generator template" "${ruby_command[@]}" -c template/random/generator.rb
 check "Random oracle template" "${ruby_command[@]}" -c template/random/oracle.rb
 check "Ruby JIT" "${ruby_command[@]}" --jit -e 'abort unless RubyVM::YJIT.enabled?'
+check "Locked Ruby gems" env BUNDLE_FROZEN=true "${bundle_command[@]}" check
+check "AtCoder gem versions" env \
+  -u BUNDLE_BIN_PATH -u BUNDLE_GEMFILE -u RUBYLIB -u RUBYOPT \
+  -u RUBYGEMS_GEMDEPS \
+  ATCODER_PROJECT_GEM_HOME="$gem_home" \
+  GEM_HOME="$gem_home" GEM_PATH="$gem_home" \
+  "${ruby_command[@]}" "$project_root/bin/check-atcoder-gems"
+check "AtCoder gem smoke tests" env \
+  -u BUNDLE_BIN_PATH -u BUNDLE_GEMFILE -u RUBYLIB -u RUBYOPT \
+  -u RUBYGEMS_GEMDEPS \
+  ATCODER_PROJECT_GEM_HOME="$gem_home" \
+  GEM_HOME="$gem_home" GEM_PATH="$gem_home" \
+  "${ruby_command[@]}" "$project_root/bin/smoke-atcoder-gems"
 check "online-judge-tools" "$project_root/.venv/bin/oj" --version
 check "aclogin" "$project_root/.venv/bin/aclogin" --help
 check "AtCoder memory-limit parser" "$project_root/.venv/bin/python" -B test/onlinejudge_compat_test.py

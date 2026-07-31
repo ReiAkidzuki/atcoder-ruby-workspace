@@ -1,6 +1,10 @@
 #!/usr/bin/env -S rbenv exec ruby
 # frozen_string_literal: true
 
+require_relative "project_gem_environment"
+
+AtCoderProjectGemEnvironment.activate!(__FILE__, ARGV)
+
 require "cgi"
 require "fileutils"
 require "find"
@@ -8,7 +12,6 @@ require "json"
 require "net/http"
 require "pathname"
 require "prism"
-require "rbconfig"
 require "ripper"
 require "shellwords"
 require "tempfile"
@@ -62,6 +65,29 @@ class AtCoderWorkspace
     @workspace_root = Pathname(ENV.fetch("ATCODER_WORKSPACE_ROOT", @project_root.to_s)).expand_path
     @oj = @project_root.join(".venv/bin/oj")
     @ruby = RbConfig.ruby
+    gemfile = @project_root.join("Gemfile")
+    if gemfile.file?
+      gem_home = @project_root.join(
+        ".bundle/gems/ruby",
+        RbConfig::CONFIG.fetch("ruby_version")
+      )
+      @ruby_environment = {
+        "BUNDLE_APP_CONFIG" => nil,
+        "BUNDLE_BIN_PATH" => nil,
+        "BUNDLE_DISABLE_SHARED_GEMS" => nil,
+        "BUNDLE_GEMFILE" => nil,
+        "BUNDLE_IGNORE_CONFIG" => nil,
+        "GEM_HOME" => gem_home.to_s,
+        "GEM_PATH" => gem_home.to_s,
+        "RUBYLIB" => nil,
+        "RUBYOPT" => nil,
+        "RUBYGEMS_GEMDEPS" => nil
+      }.freeze
+      @ruby_command = [@ruby].freeze
+    else
+      @ruby_environment = {}.freeze
+      @ruby_command = [@ruby].freeze
+    end
     @library_dir = @project_root.join("library")
   end
 
@@ -384,9 +410,16 @@ class AtCoderWorkspace
   def test_bundled_solution(directory, main_file, bundle_file, library_files)
     return false unless check_bundled_syntax(directory, main_file, bundle_file, library_files)
 
-    command = Shellwords.join([@ruby, "--jit", bundle_file.basename.to_s])
+    command = Shellwords.join(ruby_command("--jit", bundle_file.basename.to_s))
     puts "Samples: ruby --jit #{relative(main_file)} (bundled)"
-    system(@oj.to_s, "test", "-c", command, chdir: directory.to_s)
+    system(
+      @ruby_environment,
+      @oj.to_s,
+      "test",
+      "-c",
+      command,
+      chdir: directory.to_s
+    )
   end
 
   def run_problem(target, input)
@@ -407,7 +440,7 @@ class AtCoderWorkspace
         abort "error: syntax check failed"
       end
 
-      success = system(@ruby, "--jit", bundle_file.basename.to_s, **options)
+      success = ruby_system("--jit", bundle_file.basename.to_s, **options)
       exit(success ? 0 : 1)
     end
   ensure
@@ -429,7 +462,7 @@ class AtCoderWorkspace
         [oracle, oracle.relative_path_from(directory).to_s]
       ].each do |file, command_path|
         puts "Syntax: #{relative(file)}"
-        return 2 unless system(@ruby, "-c", command_path, chdir: directory.to_s)
+        return 2 unless ruby_system("-c", command_path, chdir: directory.to_s)
       end
 
       last_seed = first_seed + count - 1
@@ -439,10 +472,11 @@ class AtCoderWorkspace
       count.times do |offset|
         seed = first_seed + offset
         generator_result = capture_process(
-          [@ruby, generator.relative_path_from(directory).to_s, seed.to_s],
+          ruby_command(generator.relative_path_from(directory).to_s, seed.to_s),
           chdir: directory,
           input: "",
-          timeout: timeout
+          timeout: timeout,
+          environment: @ruby_environment
         )
         unless generator_result.success?
           report_process_failure("generator", seed, generator_result)
@@ -460,10 +494,11 @@ class AtCoderWorkspace
 
         generated_input = generator_result.stdout
         oracle_result = capture_process(
-          [@ruby, oracle.relative_path_from(directory).to_s],
+          ruby_command(oracle.relative_path_from(directory).to_s),
           chdir: directory,
           input: generated_input,
-          timeout: timeout
+          timeout: timeout,
+          environment: @ruby_environment
         )
         unless oracle_result.success?
           report_process_failure("oracle", seed, oracle_result)
@@ -481,10 +516,11 @@ class AtCoderWorkspace
         end
 
         main_result = capture_process(
-          [@ruby, "--jit", bundle_file.basename.to_s],
+          ruby_command("--jit", bundle_file.basename.to_s),
           chdir: directory,
           input: generated_input,
-          timeout: timeout
+          timeout: timeout,
+          environment: @ruby_environment
         )
         unless main_result.success?
           report_process_failure("main.rb", seed, main_result)
@@ -735,7 +771,7 @@ class AtCoderWorkspace
 
   def check_bundled_syntax(directory, main_file, bundle_file, library_files)
     puts "Syntax: #{relative(main_file)} + #{library_files.length} library files"
-    system(@ruby, "-c", bundle_file.basename.to_s, chdir: directory.to_s)
+    ruby_system("-c", bundle_file.basename.to_s, chdir: directory.to_s)
   end
 
   def with_bundled_solution(main_file)
@@ -1019,7 +1055,15 @@ class AtCoderWorkspace
     abort "error: ATCODER_RANDOM_TIMEOUT must be a positive finite number"
   end
 
-  def capture_process(command, chdir:, input:, timeout:)
+  def ruby_command(*arguments)
+    [*@ruby_command, *arguments]
+  end
+
+  def ruby_system(*arguments, **options)
+    system(@ruby_environment, *ruby_command(*arguments), **options)
+  end
+
+  def capture_process(command, chdir:, input:, timeout:, environment: {})
     pid = nil
     status = nil
     timed_out = false
@@ -1034,6 +1078,7 @@ class AtCoderWorkspace
           stdin_file.rewind
 
           pid = Process.spawn(
+            environment,
             *command,
             chdir: chdir.to_s,
             in: stdin_file,

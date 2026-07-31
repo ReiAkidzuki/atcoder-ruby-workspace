@@ -15,8 +15,8 @@ Cookies are not stored in the repository, so run `make login` on every machine u
 
 ## Installation
 
-This workspace supports macOS and Linux.
-On Windows, use WSL.
+This workspace supports Apple Silicon Macs and Debian/Ubuntu-based x86_64 Linux.
+On Windows, use Ubuntu under WSL.
 
 Install [rbenv](https://github.com/rbenv/rbenv), [ruby-build](https://github.com/rbenv/ruby-build), and [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
 On macOS, you can install them with Homebrew:
@@ -28,7 +28,7 @@ rbenv init
 
 After running `rbenv init`, follow its instructions and restart your terminal.
 
-On Linux, install the [build environment recommended by ruby-build](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment) and the `time` package that provides GNU time.
+On Debian/Ubuntu-based Linux, install the [build environment recommended by ruby-build](https://github.com/rbenv/ruby-build/wiki#suggested-build-environment) and the `time` package that provides GNU time.
 Then install rbenv and uv according to their official instructions, and run `rbenv init`.
 
 After cloning the repository, run:
@@ -39,10 +39,46 @@ make doctor
 make self-test
 ```
 
-`make setup` installs Ruby 3.4.5, online-judge-tools (`oj`), and the AtCoder login helper (`aclogin`).
-On macOS, it also installs GNU time with Homebrew when necessary.
-When every item reported by `make doctor` is `ok`, the local environment is ready.
+`make setup` installs Ruby 3.4.5, the gems and native libraries available on AtCoder, online-judge-tools (`oj`), and the AtCoder login helper (`aclogin`).
+Native dependencies on macOS follow `Brewfile`, while Ruby dependencies follow `Gemfile.lock`.
+The first run takes time because it builds the native OpenBLAS, OR-Tools, and Torch extensions.
+Native compilation is generally configured to use two parallel jobs.
+Override it with a command such as `ATCODER_BUILD_JOBS=4 make setup` if appropriate, although a few gems such as `numo-openblas` select the available CPU count themselves.
+`make doctor` checks Ruby, Bundler, the pinned gems, native libraries, and the AtCoder commands.
+When every item it reports is `ok`, the local environment is ready.
 `make self-test` runs the workspace's regression tests in a temporary directory without making network requests.
+
+## AtCoder Ruby 3.4.5 environment
+
+This repository follows AtCoder's [available languages and libraries](https://img.atcoder.jp/file/language-update/2025-10/language-list.html) and its [official Ruby environment configuration](https://img.atcoder.jp/file/language-update/2025-10/087-3-3_ruby-3-3-6.toml).
+The official configuration URL retains an older filename, but the configuration itself specifies Ruby 3.4.5.
+It uses RubyGems 3.6.9 and Bundler 2.6.9 as shipped with Ruby 3.4.5, and `Gemfile` pins the following 20 nonstandard gems listed directly by AtCoder:
+
+| Gem | Version | Gem | Version |
+| --- | --- | --- | --- |
+| `ac-library-rb` | 1.2.0 | `bit_utils` | 0.1.2 |
+| `bitarray` | 1.3.1 | `fast_trie` | 0.5.1 |
+| `faster_prime` | 1.0.2 | `ffi-geos` | 2.5.0 |
+| `immutable-ruby` | 0.2.0 | `lightgbm` | 0.4.3 |
+| `numo-linalg` | 0.1.7 | `numo-narray` | 0.9.2.1 |
+| `numo-openblas` | 0.5.1 | `or-tools` | 0.16.0 |
+| `polars-df` | 0.21.1 | `rbtree` | 0.4.6 |
+| `rgl` | 0.6.6 | `rumale` | 1.0.0 |
+| `sorted_containers` | 1.1.0 | `sorted_set` | 1.0.3 |
+| `torch-rb` | 0.21.0 | `z3` | 0.0.20230311 |
+
+To isolate this workspace from gems installed by other projects, `make setup` installs gems under `.bundle/gems`.
+The [gems bundled with Ruby 3.4.5](https://github.com/ruby/ruby/blob/v3_4_5/gems/bundled_gems) are pinned to their distribution versions as well, preventing Bundler from replacing them with newer releases.
+`Gemfile.lock` records both macOS arm64 and Linux x86_64 platforms and includes checksums for reproducible dependency resolution.
+
+`Brewfile` defines CMake, GCC, GEOS, GNU time, LLVM OpenMP, OpenBLAS, pkg-config, Rust, and Z3 for macOS.
+On Debian/Ubuntu-based Linux, `make setup` installs the corresponding apt packages.
+It also downloads the official LibTorch 2.8.0 archive for the current OS and CPU into `.cache/libtorch/`, as required by `torch-rb` 0.21.0, and verifies its pinned SHA-256 before extraction.
+After moving an already configured repository, run `make setup` again so the Torch and OpenBLAS extensions are rebuilt for the new absolute path.
+
+Bundler is used only to pin the local dependency environment.
+The `test`, `run`, and `random` commands use that pinned environment, but the generated `submission.rb` does not load `Gemfile` or Bundler.
+AtCoder executes submitted code with the regular `ruby --jit Main.rb` command from its official configuration.
 
 ## Browser login and the optional `oj` cookie
 
@@ -290,14 +326,17 @@ The self-tests live under `test/`.
 They use isolated temporary directories and fake external commands, so they do not modify problem files or require login or network access.
 The suite covers library ordering, automatic bundling, manual `bundle`, random testing, browser-submission snapshots, clipboard/browser handoff, overwrite protection, source validation, login tool discovery, and OS-specific command selection.
 GitHub Actions runs the same self-tests and the installed AtCoder parser compatibility check on both macOS and Ubuntu.
+A separate Ubuntu x86_64 environment smoke workflow, available manually and on a monthly schedule, installs Ruby, builds all native gems, verifies LibTorch, and exercises every one of the 20 nonstandard gems.
 
 ## Differences from AtCoder
 
 - Ruby is pinned to the same version used by AtCoder: 3.4.5.
 - Syntax is checked with `ruby -c`, and samples run with `ruby --jit`.
+- Every nonstandard gem listed directly by AtCoder is pinned to the same version.
+- AtCoder does not publish versions for transitive gems. `Gemfile.lock` pins a compatible dependency snapshot available when the 2025-10 environment was published, but it cannot guarantee exact parity with every transitive gem on the judge.
+- On macOS arm64, this workspace uses Homebrew native libraries and the macOS LibTorch build. AtCoder uses Linux x86_64, so the OS, CPU, and native builds differ; execution time, memory use, and some floating-point details may differ as well.
 - The AtCoder API client is pinned to the exact commit from a [proposed upstream parser fix](https://github.com/online-judge-tools/api-client/pull/175) until a release supports `MiB` and `KiB` memory limits.
-- Local execution time and memory usage do not exactly match AtCoder's production environment.
-- For deep recursion, set `RUBY_THREAD_VM_STACK_SIZE` as necessary for the problem's memory limit.
+- AtCoder sets `RUBY_THREAD_VM_STACK_SIZE={memory:b}` from each problem's memory limit. Local commands do not set this problem-specific value automatically, so set the same value explicitly when testing deep recursion.
 - Solutions that use gems unavailable on AtCoder will not run after submission. Prefer the standard library.
 
 See AtCoder's [available languages and libraries](https://img.atcoder.jp/file/language-update/2025-10/language-list.html) for details about the target language environment.

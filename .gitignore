@@ -1,4 +1,5 @@
 .cache/
+.bundle/
 .venv/
 .ruby-lsp/
 __pycache__/

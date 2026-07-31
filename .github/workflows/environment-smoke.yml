@@ -1,0 +1,50 @@
+name: AtCoder environment smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: environment-smoke
+  cancel-in-progress: false
+
+jobs:
+  ubuntu:
+    name: Ubuntu x86_64 full setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install rbenv and ruby-build
+        env:
+          RBENV_ROOT: ${{ runner.temp }}/rbenv
+        run: |
+          git clone --depth 1 https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
+          mkdir -p "$RBENV_ROOT/plugins"
+          git clone --depth 1 https://github.com/rbenv/ruby-build.git \
+            "$RBENV_ROOT/plugins/ruby-build"
+          echo "RBENV_ROOT=$RBENV_ROOT" >> "$GITHUB_ENV"
+          echo "$RBENV_ROOT/bin" >> "$GITHUB_PATH"
+          echo "$RBENV_ROOT/shims" >> "$GITHUB_PATH"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Cache verified LibTorch
+        uses: actions/cache@v5
+        with:
+          path: .cache/libtorch/2.8.0/Linux-x86_64
+          key: libtorch-linux-x86_64-2.8.0-8dea5bcfed4b53ca0f6852517bea4b4d1f3ff1cc0c21da662e834d34af1ec824
+
+      - name: Build and smoke-test the complete environment
+        env:
+          ATCODER_BUILD_JOBS: "2"
+        run: ./bin/setup
+
+      - name: Run workspace regression tests
+        run: make self-test
