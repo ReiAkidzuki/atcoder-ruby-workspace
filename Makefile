@@ -4,13 +4,14 @@ COUNT ?= 100
 SEED ?= 1
 RUBY ?= rbenv exec ruby
 
-.PHONY: help setup setup-full doctor self-test login contest tasks new add-case test run bundle init-random random submit
+.PHONY: help setup setup-full update-template doctor self-test login contest tasks new add-case test run bundle init-random random submit
 
 help:
 	@echo "AtCoder Ruby workspace"
 	@echo
 	@echo "  make setup"
 	@echo "  make setup-full"
+	@echo "  make update-template"
 	@echo "  make doctor"
 	@echo "  make self-test"
 	@echo "  make login"
@@ -30,6 +31,9 @@ setup:
 
 setup-full:
 	@./bin/setup --full
+
+update-template:
+	@./bin/update-template
 
 doctor:
 	@./bin/doctor

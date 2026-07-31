@@ -13,6 +13,50 @@ A repository created from this template has an independent history, so you do no
 To share the same solutions and custom libraries across multiple machines, create one repository from the template and clone that same repository on each machine.
 Cookies are not stored in the repository, so run `make login` on every machine used for submissions.
 
+## Follow template updates
+
+GitHub does not automatically propagate changes from a template into repositories created from it.
+Commit all local changes so the working tree is clean, then run:
+
+```sh
+make update-template
+```
+
+On its first run, the command adds a `template` remote for the public source repository and reuses it thereafter.
+An existing HTTPS or SSH remote for the official repository is also reused, while a `template` remote pointing elsewhere is left unchanged and rejected.
+It uses `.atcoder-template-version` to fetch and cherry-pick only unapplied template commits in order.
+Your solution and custom-library commits are preserved, and nothing is pushed automatically.
+Do not edit `.atcoder-template-version` manually in a derived repository; it records the template position already applied there.
+
+If both the template and your repository changed the same file, the command stops with a normal cherry-pick conflict instead of overwriting either version.
+Resolve the files, run `git add <files>`, and continue with:
+
+```sh
+git cherry-pick --continue
+```
+
+To cancel the entire update:
+
+```sh
+git cherry-pick --abort
+```
+
+After a successful update, refresh dependencies, validate the workspace, review the result, and push it to your repository:
+
+```sh
+make setup
+make doctor
+make self-test
+git push
+```
+
+### Publishing source-template updates
+
+When updating this source template's `main` branch, set `.atcoder-template-version` to a new, unique value in the final commit of the published batch and push the whole batch together.
+The update command stops if the latest commit does not advance the version or if a historical version value is reused.
+
+Derived repositories use published commits as update anchors, so do not amend or force-push a published release commit.
+
 ## Installation
 
 This workspace supports Apple Silicon Macs and Debian/Ubuntu-based x86_64 Linux.

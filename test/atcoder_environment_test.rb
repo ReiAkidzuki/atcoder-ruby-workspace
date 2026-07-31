@@ -15,6 +15,8 @@ class AtCoderEnvironmentTest < Minitest::Test
   BREWFILE = PROJECT_ROOT.join("Brewfile")
   CORE_BREWFILE = PROJECT_ROOT.join("Brewfile.core")
   MAKEFILE = PROJECT_ROOT.join("Makefile")
+  TEMPLATE_VERSION = PROJECT_ROOT.join(".atcoder-template-version")
+  UPDATE_TEMPLATE = PROJECT_ROOT.join("bin/update-template")
   SETUP = PROJECT_ROOT.join("bin/setup")
   DOCTOR = PROJECT_ROOT.join("bin/doctor")
   GEM_CHECKER = PROJECT_ROOT.join("bin/check-atcoder-gems")
@@ -289,6 +291,19 @@ class AtCoderEnvironmentTest < Minitest::Test
     assert_equal 2, status.exitstatus
     assert_empty stdout
     assert_includes stderr, "usage: bin/setup [--full]"
+  end
+
+  def test_template_update_command_is_wired_to_the_public_template
+    source = UPDATE_TEMPLATE.read
+    makefile = MAKEFILE.read
+
+    assert_match(/\A[0-9]+(?:\.[0-9]+)*\n?\z/, TEMPLATE_VERSION.read)
+    assert_predicate UPDATE_TEMPLATE, :executable?
+    assert_includes source,
+      "https://github.com/ReiAkidzuki/atcoder-ruby-workspace.git"
+    assert_includes source, 'version_file=".atcoder-template-version"'
+    assert_includes makefile, "update-template:"
+    assert_includes makefile, "./bin/update-template"
   end
 
   def test_gem_profile_defaults_to_full_for_pre_profile_installations

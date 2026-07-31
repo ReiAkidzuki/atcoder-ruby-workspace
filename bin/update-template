@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly default_template_url="https://github.com/ReiAkidzuki/atcoder-ruby-workspace.git"
+readonly template_remote="${ATCODER_TEMPLATE_REMOTE:-template}"
+readonly template_url="${ATCODER_TEMPLATE_URL:-$default_template_url}"
+readonly template_branch="${ATCODER_TEMPLATE_BRANCH:-main}"
+readonly version_file=".atcoder-template-version"
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+is_official_template_url() {
+  case "$1" in
+    "https://github.com/ReiAkidzuki/atcoder-ruby-workspace" | \
+      "$default_template_url" | \
+      "git@github.com:ReiAkidzuki/atcoder-ruby-workspace" | \
+      "git@github.com:ReiAkidzuki/atcoder-ruby-workspace.git" | \
+      "ssh://git@github.com/ReiAkidzuki/atcoder-ruby-workspace" | \
+      "ssh://git@github.com/ReiAkidzuki/atcoder-ruby-workspace.git")
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+normalize_version() {
+  local value="$1"
+  value="${value%$'\r'}"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+  [[ "$value" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
+  printf '%s' "$value"
+}
+
+if ! project_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  die "run this command inside an AtCoder workspace Git repository"
+fi
+cd "$project_root"
+
+if ! branch="$(git symbolic-ref --quiet --short HEAD)"; then
+  die "template updates cannot be applied from a detached HEAD"
+fi
+
+for operation in CHERRY_PICK_HEAD MERGE_HEAD REVERT_HEAD; do
+  operation_path="$(git rev-parse --git-path "$operation")"
+  [[ ! -e "$operation_path" ]] ||
+    die "finish or abort the current Git operation before updating the template"
+done
+for operation_directory in rebase-apply rebase-merge sequencer; do
+  operation_path="$(git rev-parse --git-path "$operation_directory")"
+  [[ ! -d "$operation_path" ]] ||
+    die "finish or abort the current Git operation before updating the template"
+done
+
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  die "working tree is not clean; commit or stash all changes first"
+fi
+
+[[ -f "$version_file" ]] ||
+  die "$version_file is missing; update this repository manually once before using this command"
+local_version_contents="$(< "$version_file")"
+if ! local_version="$(normalize_version "$local_version_contents")"; then
+  die "$version_file contains an invalid version"
+fi
+
+if git remote get-url "$template_remote" >/dev/null 2>&1; then
+  configured_url="$(git remote get-url "$template_remote")"
+  if [[ -n "${ATCODER_TEMPLATE_URL+x}" && "$configured_url" != "$template_url" ]]; then
+    die "remote $template_remote uses $configured_url, not $template_url"
+  elif [[ -z "${ATCODER_TEMPLATE_URL+x}" ]] &&
+    ! is_official_template_url "$configured_url"; then
+    die "remote $template_remote does not point to the official template: $configured_url; set ATCODER_TEMPLATE_URL explicitly to use it"
+  fi
+else
+  git remote add "$template_remote" "$template_url"
+  printf 'Added Git remote %s: %s\n' "$template_remote" "$template_url"
+fi
+
+printf 'Fetching %s/%s...\n' "$template_remote" "$template_branch"
+git fetch --prune "$template_remote" "$template_branch"
+remote_ref="refs/remotes/$template_remote/$template_branch"
+git rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null ||
+  die "remote branch $template_remote/$template_branch was not fetched"
+
+if ! remote_version="$(git show "$remote_ref:$version_file" 2>/dev/null)"; then
+  die "$template_remote/$template_branch does not contain $version_file"
+fi
+if ! remote_version="$(normalize_version "$remote_version")"; then
+  die "$template_remote/$template_branch contains an invalid template version"
+fi
+
+remote_head="$(git rev-parse "$remote_ref^{commit}")"
+latest_version_commit="$(git rev-list -1 "$remote_ref" -- "$version_file")"
+[[ "$latest_version_commit" == "$remote_head" ]] ||
+  die "template version was not advanced in the latest commit $remote_head"
+
+base_commit=""
+seen_versions=()
+while IFS= read -r candidate_commit; do
+  if ! candidate_contents="$(git show "$candidate_commit:$version_file" 2>/dev/null)"; then
+    die "template version history is missing $version_file at $candidate_commit"
+  fi
+  if ! candidate_version="$(normalize_version "$candidate_contents")"; then
+    die "template version history contains an invalid value at $candidate_commit"
+  fi
+
+  if (( ${#seen_versions[@]} > 0 )); then
+    for seen_version in "${seen_versions[@]}"; do
+      [[ "$candidate_version" != "$seen_version" ]] ||
+        die "template version $candidate_version was reused in template history"
+    done
+  fi
+  seen_versions+=("$candidate_version")
+
+  if [[ "$candidate_version" == "$local_version" ]]; then
+    base_commit="$candidate_commit"
+  fi
+done < <(git rev-list "$remote_ref" -- "$version_file")
+
+[[ -n "$base_commit" ]] ||
+  die "template version $local_version was not found in $template_remote/$template_branch"
+
+pending_commits=()
+while IFS= read -r pending_commit; do
+  [[ -n "$pending_commit" ]] && pending_commits+=("$pending_commit")
+done < <(git rev-list --reverse --topo-order "$base_commit..$remote_ref")
+
+if (( ${#pending_commits[@]} == 0 )); then
+  printf 'Template is already up to date at version %s.\n' "$local_version"
+  exit 0
+fi
+
+if [[ "$remote_version" == "$local_version" ]]; then
+  die "template has new commits, but its version was not advanced from $local_version"
+fi
+
+for pending_commit in "${pending_commits[@]}"; do
+  parent_count="$(
+    git rev-list --parents -n 1 "$pending_commit" |
+      awk '{ print NF - 1 }'
+  )"
+  if (( parent_count > 1 )); then
+    die "template update contains merge commit $pending_commit; apply it manually"
+  fi
+done
+
+printf 'Template updates to apply on %s:\n' "$branch"
+for pending_commit in "${pending_commits[@]}"; do
+  git log -1 --format='  %h %s' "$pending_commit"
+done
+
+if ! git cherry-pick -x "${pending_commits[@]}"; then
+  cat >&2 <<'MESSAGE'
+Template update stopped because of a conflict.
+Resolve each conflicted file, run `git add <files>`, then:
+  git cherry-pick --continue
+To discard the entire template update:
+  git cherry-pick --abort
+MESSAGE
+  exit 1
+fi
+
+applied_version_contents="$(< "$version_file")"
+if ! applied_version="$(normalize_version "$applied_version_contents")"; then
+  die "applied commits left an invalid $version_file"
+fi
+if [[ "$applied_version" != "$remote_version" ]]; then
+  die "applied commits did not update $version_file to $remote_version"
+fi
+
+printf 'Template updated from template version %s to %s (%d commits).\n' \
+  "$local_version" "$remote_version" "${#pending_commits[@]}"
+printf '%s\n' \
+  'No changes were pushed.' \
+  'Next: make setup && make doctor && make self-test'
