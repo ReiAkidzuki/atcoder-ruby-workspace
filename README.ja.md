@@ -13,6 +13,33 @@ AtCoder の Ruby 3.4.5（CRuby）環境を対象とした作業環境です。
 同じ解答と自作ライブラリを複数の端末で共有する場合は、テンプレートからリポジトリを一度だけ作り、その同じリポジトリを各端末へ clone します。
 Cookie はリポジトリへ保存されないため、提出に使う端末ごとに `make login` を実行してください。
 
+## 開催中コンテストでの生成AI利用
+
+AtCoder の[生成AI対策ルール](https://info.atcoder.jp/entry/llm-rules-ja)は、開催中の ABC、Division を問わない ARC、AGC に、Unrated での参加を含めて適用されます。
+過去問の練習には適用されず、AHC には[別のルール](https://info.atcoder.jp/entry/ahc-llm-rules-ja)があります。
+ルールは変更されることがあるため、参加前に AtCoder の最新版を確認してください。
+
+対象コンテストの開催中は、ルールで指定された方法による問題文の翻訳を除き、生成AIを使用できません。
+解法やコードの生成だけでなく、生成AIによるコード補完、問題文の要約、コンパイルエラーやバグの診断、プログラミング言語の変換も禁止されています。
+生成AIを使わない通常の補完は許可されていますが、このワークスペースは誤操作を避けるため、生成AI機能を無効にする設定を常時適用します。
+
+### VS Code でAI機能を停止する
+
+`.vscode/settings.json` は、VS Code 公式の [`chat.disableAIFeatures`](https://code.visualstudio.com/docs/setup/copilot) と個別の補助設定により、組み込みAI、Copilot、インライン提案をこのワークスペースで無効にします。
+対象コンテストへ参加するときは、既存の VS Code ウィンドウを閉じ、次のコマンドで新しいウィンドウを開いてください。
+
+```sh
+make vscode-safe
+```
+
+このコマンドは [`code --new-window --disable-extensions`](https://code.visualstudio.com/docs/configure/command-line) を使用し、生成AI以外も含むすべての拡張機能をそのウィンドウで停止します。
+`AGENTS.md` と `.github/copilot-instructions.md` は、対応するAIエージェントに開催中の問題を扱わないよう指示します。
+
+これらの設定は誤操作を減らすための予防策であり、ルール順守を保証するものではありません。
+別のエディタ、VS Code 派生製品、既存の VS Code ウィンドウ、ブラウザ、デスクトップアプリ、CLI、対話型AI検索までは制御できません。
+コンテスト開始前にAIアプリ、AIを使うCLI、ブラウザのAIチャットを閉じ、使用するすべての環境で生成AIが停止していることを確認してください。
+検索結果のAI概要も閲覧しないでください。
+
 ## テンプレートの更新を取り込む
 
 GitHub のテンプレートから作ったリポジトリへ、元のテンプレートの更新が自動で入ることはありません。

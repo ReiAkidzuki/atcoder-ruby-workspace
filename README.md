@@ -13,6 +13,33 @@ A repository created from this template has an independent history, so you do no
 To share the same solutions and custom libraries across multiple machines, create one repository from the template and clone that same repository on each machine.
 Cookies are not stored in the repository, so run `make login` on every machine used for submissions.
 
+## Generative AI during ongoing contests
+
+AtCoder's [Rules against Generative AI](https://info.atcoder.jp/entry/llm-rules-en) apply during ongoing ABCs, ARCs of every division, and AGCs, including Unrated participation.
+They do not apply to practice on past problems, while AHCs have [separate rules](https://info.atcoder.jp/entry/ahc-llm-rules-en).
+The rules may change, so check the latest official version before every contest.
+
+During a covered contest, generative AI is prohibited except for problem-statement translation performed exactly as the rules specify.
+The prohibition includes AI-based code completion, problem-statement summarization, compiler-error or bug diagnosis, and programming-language conversion, as well as generating solutions or code.
+Non-AI completion remains permitted, but this workspace keeps generative-AI features disabled to prevent accidental use.
+
+### Disable AI features in VS Code
+
+`.vscode/settings.json` uses VS Code's official [`chat.disableAIFeatures`](https://code.visualstudio.com/docs/setup/copilot) setting plus explicit fallback settings to disable built-in AI, Copilot, and inline suggestions in this workspace.
+Before participating in a covered contest, close existing VS Code windows and open a new one with:
+
+```sh
+make vscode-safe
+```
+
+This command uses [`code --new-window --disable-extensions`](https://code.visualstudio.com/docs/configure/command-line), disabling every extension in that window, including non-AI extensions.
+`AGENTS.md` and `.github/copilot-instructions.md` tell compatible AI agents not to handle live-contest tasks.
+
+These settings are precautions and do not guarantee compliance.
+They cannot control other editors, VS Code derivatives, existing VS Code windows, browser or desktop applications, CLI tools, or conversational AI search.
+Before the contest starts, close AI applications, AI-enabled CLI sessions, and browser AI chats, then verify that generative AI is disabled in every environment you use.
+Do not view AI-generated search overviews.
+
 ## Follow template updates
 
 GitHub does not automatically propagate changes from a template into repositories created from it.

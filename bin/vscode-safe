@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly project_root="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")/.." &&
+    pwd -P
+)"
+readonly vscode_command="${ATCODER_VSCODE_COMMAND:-code}"
+
+if ! command -v "$vscode_command" >/dev/null 2>&1; then
+  printf 'error: VS Code command not found: %s\n' "$vscode_command" >&2
+  printf '%s\n' \
+    "Install the 'code' shell command, or set ATCODER_VSCODE_COMMAND." >&2
+  exit 1
+fi
+
+exec "$vscode_command" \
+  --new-window \
+  --disable-extensions \
+  "$project_root"
